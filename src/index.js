@@ -70,6 +70,25 @@ async function processUpdate(update, env) {
     return;
   }
 
+  // Handle plain URL messages (e.g. https://example.com/photo.jpg)
+  const imageUrl = getMediaUrl(message);
+  if (imageUrl) {
+    try {
+      const { url: imgurUrl, deletehash } = await mirrorUrlToImgur(imageUrl, env);
+      await sendMessage(chatId, imgurUrl, env, {
+        inline_keyboard: [
+          [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
+          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+          [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
+        ],
+      });
+    } catch (err) {
+      console.error("mirrorUrlToImgur error:", err);
+      await sendMessage(chatId, `Error uploading: ${err.message}`, env);
+    }
+    return;
+  }
+
   const media = getMediaFile(message);
   if (!media) return;
 
@@ -162,6 +181,22 @@ async function handleCallbackQuery(query, env) {
   }
 
   await answerCallbackQuery(queryId, env);
+}
+
+const MEDIA_URL_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)(\?.*)?$/i;
+
+// Returns the URL if the message is a single bare image/video URL, else null.
+function getMediaUrl(message) {
+  const text = message.text?.trim();
+  if (!text || text.includes(" ")) return null;
+  try {
+    const u = new URL(text);
+    if (!["http:", "https:"].includes(u.protocol)) return null;
+    if (!MEDIA_URL_RE.test(u.pathname)) return null;
+    return text;
+  } catch {
+    return null;
+  }
 }
 
 // Returns { file_id, file_size } for supported media types, or null.
@@ -307,6 +342,48 @@ async function mirrorToImgur(fileId, env) {
     if (imgurRes.status === 429) {
       lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
       continue; // try next key
+    }
+
+    if (!imgurRes.ok) {
+      const errText = await imgurRes.text().catch(() => imgurRes.statusText);
+      throw new Error(`Imgur upload failed (${imgurRes.status}): ${errText}`);
+    }
+
+    const imgurData = await imgurRes.json();
+    if (!imgurData.success) {
+      throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
+    }
+
+    return {
+      url: `https://imgur.com/${imgurData.data.id}`,
+      deletehash: imgurData.data.deletehash,
+    };
+  }
+
+  throw lastError ?? new Error("All Imgur Client IDs exhausted");
+}
+
+// Uploads an image by URL directly — Imgur fetches it server-side, no download needed.
+async function mirrorUrlToImgur(imageUrl, env) {
+  const clientIds = shuffled(getClientIds(env));
+
+  let lastError;
+  for (const clientId of clientIds) {
+    const imgurRes = await fetch("https://api.imgur.com/3/image", {
+      method: "POST",
+      headers: {
+        Authorization: `Client-ID ${clientId}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ image: imageUrl, type: "url" }),
+    });
+
+    const remaining = imgurRes.headers.get("X-RateLimit-ClientRemaining");
+    console.log(`Imgur key …${clientId.slice(-6)}: status=${imgurRes.status} remaining=${remaining ?? "?"}`);
+
+    if (imgurRes.status === 429) {
+      lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
+      continue;
     }
 
     if (!imgurRes.ok) {
