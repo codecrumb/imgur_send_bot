@@ -71,8 +71,8 @@ async function processUpdate(update, env) {
     const imgurUrl = await mirrorToImgur(fileId, env);
     await sendMessage(chatId, imgurUrl, env, {
       inline_keyboard: [
-        [{ text: "Open Image", url: imgurUrl }],
-        [{ text: "Share Link", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}&text=Check%20this%20image!` }],
+        [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
+        [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
       ],
     });
   } catch (err) {
