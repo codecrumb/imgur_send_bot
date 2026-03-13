@@ -2,6 +2,21 @@ name = "imgursendbot"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
 # Bot credentials — set these as secrets (see README), or replace inline for quick testing.
 # To set secrets:
 #   wrangler secret put TELEGRAM_BOT_TOKEN
