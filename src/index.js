@@ -46,6 +46,12 @@ async function handleWebhook(request, env) {
 // ---------------------------------------------------------------------------
 
 async function processUpdate(update, env) {
+  // Handle delete button presses
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query, env);
+    return;
+  }
+
   const message = update.message || update.channel_post;
   if (!message) return;
 
@@ -79,17 +85,40 @@ async function processUpdate(update, env) {
   }
 
   try {
-    const imgurUrl = await mirrorToImgur(media.file_id, env);
+    const { url: imgurUrl, deletehash } = await mirrorToImgur(media.file_id, env);
     await sendMessage(chatId, imgurUrl, env, {
       inline_keyboard: [
         [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
         [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+        [{ text: "Delete from Imgur", callback_data: `delete:${deletehash}` }],
       ],
     });
   } catch (err) {
     console.error("mirrorToImgur error:", err);
     await sendMessage(chatId, `Error uploading: ${err.message}`, env);
   }
+}
+
+async function handleCallbackQuery(query, env) {
+  const { id: queryId, message, data } = query;
+
+  if (!data?.startsWith("delete:")) {
+    await answerCallbackQuery(queryId, env);
+    return;
+  }
+
+  const deletehash = data.slice("delete:".length);
+
+  try {
+    await deleteFromImgur(deletehash, env);
+  } catch (err) {
+    console.error("deleteFromImgur error:", err);
+  }
+
+  await Promise.all([
+    editMessageText(message.chat.id, message.message_id, "Link deleted ✅", env),
+    answerCallbackQuery(queryId, env),
+  ]);
 }
 
 // Returns { file_id, file_size } for supported media types, or null.
@@ -156,6 +185,22 @@ async function sendMessage(chatId, text, env, replyMarkup) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+async function editMessageText(chatId, messageId, text, env) {
+  await fetch(telegramApi("editMessageText", env), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text }),
+  });
+}
+
+async function answerCallbackQuery(callbackQueryId, env) {
+  await fetch(telegramApi("answerCallbackQuery", env), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId }),
   });
 }
 
@@ -229,8 +274,23 @@ async function mirrorToImgur(fileId, env) {
       throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
     }
 
-    return `https://imgur.com/${imgurData.data.id}`;
+    return {
+      url: `https://imgur.com/${imgurData.data.id}`,
+      deletehash: imgurData.data.deletehash,
+    };
   }
 
   throw lastError ?? new Error("All Imgur Client IDs exhausted");
+}
+
+async function deleteFromImgur(deletehash, env) {
+  const clientIds = getClientIds(env);
+  const res = await fetch(`https://api.imgur.com/3/image/${deletehash}`, {
+    method: "DELETE",
+    headers: { Authorization: `Client-ID ${clientIds[0]}` },
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.statusText);
+    throw new Error(`Imgur delete failed (${res.status}): ${errText}`);
+  }
 }
