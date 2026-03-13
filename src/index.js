@@ -50,8 +50,21 @@ async function processUpdate(update, env) {
   if (!message) return;
 
   const chatId = message.chat.id;
-  const fileId = getImageFileId(message);
 
+  // Handle /start command
+  if (message.text && message.text.startsWith("/start")) {
+    const username = message.from?.username
+      ? `@${message.from.username}`
+      : message.from?.first_name || "there";
+    await sendMessage(
+      chatId,
+      `Hi ${username}! 👋\nSend me your images, and I'll upload them to Imgur instantly.\nJust send a photo, image file, or GIF, and I'll reply with the link!`,
+      env
+    );
+    return;
+  }
+
+  const fileId = getImageFileId(message);
   if (!fileId) return;
 
   try {
