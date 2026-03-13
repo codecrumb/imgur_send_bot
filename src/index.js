@@ -4,7 +4,10 @@
  *
  * Environment variables (set via `wrangler secret put` or .dev.vars):
  *   TELEGRAM_BOT_TOKEN  — from BotFather
- *   IMGUR_CLIENT_ID     — from https://api.imgur.com/oauth2/addclient (anonymous upload)
+ *   IMGUR_CLIENT_IDS    — comma-separated list of Imgur Client-IDs
+ *                         e.g. "abc123,def456,ghi789"
+ *                         Requests are spread randomly across all keys;
+ *                         if one is rate-limited (429) the next is tried.
  */
 
 export default {
@@ -15,7 +18,6 @@ export default {
       return handleWebhook(request, env);
     }
 
-    // Health-check / accidental GET
     return new Response("Telegram→Imgur bot is running.", { status: 200 });
   },
 };
@@ -32,7 +34,6 @@ async function handleWebhook(request, env) {
     return new Response("Bad JSON", { status: 400 });
   }
 
-  // Telegram only cares that we respond quickly; do the heavy work async.
   env.ctx
     ? env.ctx.waitUntil(processUpdate(update, env))
     : await processUpdate(update, env);
@@ -51,7 +52,7 @@ async function processUpdate(update, env) {
   const chatId = message.chat.id;
   const fileId = getImageFileId(message);
 
-  if (!fileId) return; // not a photo/image — ignore silently
+  if (!fileId) return;
 
   try {
     const imgurUrl = await mirrorToImgur(fileId, env);
@@ -62,18 +63,10 @@ async function processUpdate(update, env) {
   }
 }
 
-/**
- * Returns the best file_id from the message, or null if there is no image.
- * Handles:
- *  - message.photo  (compressed Telegram photo — picks highest resolution)
- *  - message.document with an image MIME type (uncompressed "Send as file")
- */
 function getImageFileId(message) {
   if (message.photo && message.photo.length > 0) {
-    // photo array is sorted ascending by size; last element is largest.
     return message.photo[message.photo.length - 1].file_id;
   }
-
   if (
     message.document &&
     message.document.mime_type &&
@@ -81,7 +74,6 @@ function getImageFileId(message) {
   ) {
     return message.document.file_id;
   }
-
   return null;
 }
 
@@ -93,11 +85,7 @@ function telegramApi(method, env) {
   return `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
 }
 
-/**
- * Resolves a file_id → downloadable URL, then returns the raw bytes.
- */
 async function downloadTelegramFile(fileId, env) {
-  // Step 1: getFile → file_path
   const infoRes = await fetch(
     `${telegramApi("getFile", env)}?file_id=${encodeURIComponent(fileId)}`
   );
@@ -109,18 +97,15 @@ async function downloadTelegramFile(fileId, env) {
     throw new Error(`getFile API error: ${JSON.stringify(info)}`);
   }
 
-  const filePath = info.result.file_path;
-
-  // Step 2: download raw bytes
-  const fileUrl = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`;
+  const fileUrl = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`;
   const fileRes = await fetch(fileUrl);
   if (!fileRes.ok) {
-    throw new Error(
-      `File download failed: ${fileRes.status} ${fileRes.statusText}`
-    );
+    throw new Error(`File download failed: ${fileRes.status} ${fileRes.statusText}`);
   }
 
-  return fileRes; // caller streams the body to Imgur
+  // Buffer the bytes so we can retry the Imgur upload with a different key
+  // if one is rate-limited.
+  return fileRes.arrayBuffer();
 }
 
 async function sendMessage(chatId, text, env) {
@@ -132,37 +117,77 @@ async function sendMessage(chatId, text, env) {
 }
 
 // ---------------------------------------------------------------------------
+// Imgur client-ID pool
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the list of Client IDs from the environment.
+ * Accepts a comma-separated IMGUR_CLIENT_IDS secret.
+ */
+function getClientIds(env) {
+  const raw = env.IMGUR_CLIENT_IDS || "";
+  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    throw new Error("No Imgur Client IDs configured. Set IMGUR_CLIENT_IDS.");
+  }
+  return ids;
+}
+
+/**
+ * Shuffles an array in-place using Fisher-Yates.
+ * Starting from a random position distributes load across all keys evenly.
+ */
+function shuffled(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ---------------------------------------------------------------------------
 // Imgur upload
 // ---------------------------------------------------------------------------
 
 /**
- * Downloads the Telegram file and uploads it to Imgur anonymously.
- * Returns the direct i.imgur.com URL.
+ * Downloads the Telegram file, then tries each Imgur Client ID (in random
+ * order) until one succeeds.  Falls back to the next key on 429.
  */
 async function mirrorToImgur(fileId, env) {
-  const telegramFileRes = await downloadTelegramFile(fileId, env);
+  const fileBytes = await downloadTelegramFile(fileId, env);
+  const clientIds = shuffled(getClientIds(env));
 
-  // Stream the file body directly into the Imgur request to avoid buffering.
-  const imgurRes = await fetch("https://api.imgur.com/3/image", {
-    method: "POST",
-    headers: {
-      Authorization: `Client-ID ${env.IMGUR_CLIENT_ID}`,
-      // No Content-Type — let fetch set it for the raw binary body.
-    },
-    body: telegramFileRes.body,
-    // duplex is required in some runtimes when body is a ReadableStream
-    duplex: "half",
-  });
+  let lastError;
+  for (const clientId of clientIds) {
+    const imgurRes = await fetch("https://api.imgur.com/3/image", {
+      method: "POST",
+      headers: {
+        Authorization: `Client-ID ${clientId}`,
+      },
+      body: fileBytes,
+    });
 
-  if (!imgurRes.ok) {
-    const errText = await imgurRes.text().catch(() => imgurRes.statusText);
-    throw new Error(`Imgur upload failed (${imgurRes.status}): ${errText}`);
+    const remaining = imgurRes.headers.get("X-RateLimit-ClientRemaining");
+    console.log(`Imgur key …${clientId.slice(-6)}: status=${imgurRes.status} remaining=${remaining ?? "?"}`);
+
+    if (imgurRes.status === 429) {
+      lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
+      continue; // try next key
+    }
+
+    if (!imgurRes.ok) {
+      const errText = await imgurRes.text().catch(() => imgurRes.statusText);
+      throw new Error(`Imgur upload failed (${imgurRes.status}): ${errText}`);
+    }
+
+    const imgurData = await imgurRes.json();
+    if (!imgurData.success) {
+      throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
+    }
+
+    return `https://imgur.com/${imgurData.data.id}`;
   }
 
-  const imgurData = await imgurRes.json();
-  if (!imgurData.success) {
-    throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
-  }
-
-  return `https://imgur.com/${imgurData.data.id}`;
+  throw lastError ?? new Error("All Imgur Client IDs exhausted");
 }

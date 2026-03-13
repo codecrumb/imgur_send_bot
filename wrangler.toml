@@ -5,8 +5,8 @@ compatibility_date = "2024-01-01"
 # Bot credentials — set these as secrets (see README), or replace inline for quick testing.
 # To set secrets:
 #   wrangler secret put TELEGRAM_BOT_TOKEN
-#   wrangler secret put IMGUR_CLIENT_ID
+#   wrangler secret put IMGUR_CLIENT_IDS   ← comma-separated list, e.g. "id1,id2,id3"
 #
 # For local dev you can also use a .dev.vars file (never commit it):
 #   TELEGRAM_BOT_TOKEN=123456:ABC...
-#   IMGUR_CLIENT_ID=your_client_id
+#   IMGUR_CLIENT_IDS=id1,id2,id3
