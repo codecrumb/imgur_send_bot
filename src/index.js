@@ -90,7 +90,7 @@ async function processUpdate(update, env) {
       inline_keyboard: [
         [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
         [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-        [{ text: "Delete from Imgur", callback_data: `delete:${deletehash}` }],
+        [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
       ],
     });
   } catch (err) {
@@ -102,23 +102,66 @@ async function processUpdate(update, env) {
 async function handleCallbackQuery(query, env) {
   const { id: queryId, message, data } = query;
 
-  if (!data?.startsWith("delete:")) {
+  if (!data) {
     await answerCallbackQuery(queryId, env);
     return;
   }
 
-  const deletehash = data.slice("delete:".length);
-
-  try {
-    await deleteFromImgur(deletehash, env);
-  } catch (err) {
-    console.error("deleteFromImgur error:", err);
+  // Step 1: first tap on delete — ask for confirmation
+  if (data.startsWith("delete:")) {
+    const deletehash = data.slice("delete:".length);
+    const imgurId = message.text?.split("/").pop() ?? "";
+    await Promise.all([
+      editMessageText(
+        message.chat.id,
+        message.message_id,
+        "Are you sure you want to delete this image?",
+        env,
+        {
+          inline_keyboard: [
+            [{ text: "✅ Yes, delete", callback_data: `confirm:${deletehash}` }],
+            [{ text: "↩️ Cancel", callback_data: `cancel:${imgurId}:${deletehash}` }],
+          ],
+        }
+      ),
+      answerCallbackQuery(queryId, env),
+    ]);
+    return;
   }
 
-  await Promise.all([
-    editMessageText(message.chat.id, message.message_id, "Link deleted ✅", env),
-    answerCallbackQuery(queryId, env),
-  ]);
+  // Step 2a: confirmed — delete and mark as deleted
+  if (data.startsWith("confirm:")) {
+    const deletehash = data.slice("confirm:".length);
+    try {
+      await deleteFromImgur(deletehash, env);
+    } catch (err) {
+      console.error("deleteFromImgur error:", err);
+    }
+    await Promise.all([
+      editMessageText(message.chat.id, message.message_id, "Link deleted ✅", env),
+      answerCallbackQuery(queryId, env),
+    ]);
+    return;
+  }
+
+  // Step 2b: cancelled — restore original message
+  if (data.startsWith("cancel:")) {
+    const [imgurId, deletehash] = data.slice("cancel:".length).split(":");
+    const imgurUrl = `https://imgur.com/${imgurId}`;
+    await Promise.all([
+      editMessageText(message.chat.id, message.message_id, imgurUrl, env, {
+        inline_keyboard: [
+          [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
+          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+          [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
+        ],
+      }),
+      answerCallbackQuery(queryId, env),
+    ]);
+    return;
+  }
+
+  await answerCallbackQuery(queryId, env);
 }
 
 // Returns { file_id, file_size } for supported media types, or null.
@@ -188,11 +231,13 @@ async function sendMessage(chatId, text, env, replyMarkup) {
   });
 }
 
-async function editMessageText(chatId, messageId, text, env) {
+async function editMessageText(chatId, messageId, text, env, replyMarkup) {
+  const body = { chat_id: chatId, message_id: messageId, text };
+  if (replyMarkup) body.reply_markup = replyMarkup;
   await fetch(telegramApi("editMessageText", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text }),
+    body: JSON.stringify(body),
   });
 }
 
