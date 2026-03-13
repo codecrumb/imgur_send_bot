@@ -164,5 +164,5 @@ async function mirrorToImgur(fileId, env) {
     throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
   }
 
-  return imgurData.data.link; // e.g. https://i.imgur.com/abc123.png
+  return `https://imgur.com/${imgurData.data.id}`;
 }
