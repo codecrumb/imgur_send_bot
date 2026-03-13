@@ -69,7 +69,12 @@ async function processUpdate(update, env) {
 
   try {
     const imgurUrl = await mirrorToImgur(fileId, env);
-    await sendMessage(chatId, imgurUrl, env);
+    await sendMessage(chatId, imgurUrl, env, {
+      inline_keyboard: [
+        [{ text: "Open Image", url: imgurUrl }],
+        [{ text: "Share Link", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}&text=Check%20this%20image!` }],
+      ],
+    });
   } catch (err) {
     console.error("mirrorToImgur error:", err);
     await sendMessage(chatId, `Error uploading image: ${err.message}`, env);
@@ -121,11 +126,13 @@ async function downloadTelegramFile(fileId, env) {
   return fileRes.arrayBuffer();
 }
 
-async function sendMessage(chatId, text, env) {
+async function sendMessage(chatId, text, env, replyMarkup) {
+  const body = { chat_id: chatId, text };
+  if (replyMarkup) body.reply_markup = replyMarkup;
   await fetch(telegramApi("sendMessage", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify(body),
   });
 }
 
