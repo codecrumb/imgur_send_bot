@@ -1,0 +1,4 @@
+# Copy this file to .dev.vars and fill in your values for local development.
+# .dev.vars is loaded automatically by `wrangler dev` and is git-ignored.
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
+IMGUR_CLIENT_ID=your_imgur_client_id_here
