@@ -58,17 +58,28 @@ async function processUpdate(update, env) {
       : message.from?.first_name || "there";
     await sendMessage(
       chatId,
-      `Hi ${username}! 👋\nSend me your images, and I'll upload them to Imgur instantly.\nJust send a photo, image file, or GIF, and I'll reply with the link!`,
+      `Hi ${username}! 👋\nSend me your images or videos, and I'll upload them to Imgur instantly.\nJust send a photo, video, GIF, or file (up to 20 MB) and I'll reply with the link!`,
       env
     );
     return;
   }
 
-  const fileId = getImageFileId(message);
-  if (!fileId) return;
+  const media = getMediaFile(message);
+  if (!media) return;
+
+  const MAX_BYTES = 20 * 1024 * 1024; // 20 MB — Telegram Bot API limit
+  if (media.file_size && media.file_size > MAX_BYTES) {
+    const mb = (media.file_size / (1024 * 1024)).toFixed(1);
+    await sendMessage(
+      chatId,
+      `File too large (${mb} MB). Telegram limits bot downloads to 20 MB — please compress it and send again.`,
+      env
+    );
+    return;
+  }
 
   try {
-    const imgurUrl = await mirrorToImgur(fileId, env);
+    const imgurUrl = await mirrorToImgur(media.file_id, env);
     await sendMessage(chatId, imgurUrl, env, {
       inline_keyboard: [
         [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
@@ -77,20 +88,32 @@ async function processUpdate(update, env) {
     });
   } catch (err) {
     console.error("mirrorToImgur error:", err);
-    await sendMessage(chatId, `Error uploading image: ${err.message}`, env);
+    await sendMessage(chatId, `Error uploading: ${err.message}`, env);
   }
 }
 
-function getImageFileId(message) {
+// Returns { file_id, file_size } for supported media types, or null.
+function getMediaFile(message) {
   if (message.photo && message.photo.length > 0) {
-    return message.photo[message.photo.length - 1].file_id;
+    const p = message.photo[message.photo.length - 1];
+    return { file_id: p.file_id, file_size: p.file_size };
+  }
+  if (message.video) {
+    return { file_id: message.video.file_id, file_size: message.video.file_size };
+  }
+  if (message.animation) {
+    return { file_id: message.animation.file_id, file_size: message.animation.file_size };
+  }
+  if (message.video_note) {
+    return { file_id: message.video_note.file_id, file_size: message.video_note.file_size };
   }
   if (
     message.document &&
     message.document.mime_type &&
-    message.document.mime_type.startsWith("image/")
+    (message.document.mime_type.startsWith("image/") ||
+      message.document.mime_type.startsWith("video/"))
   ) {
-    return message.document.file_id;
+    return { file_id: message.document.file_id, file_size: message.document.file_size };
   }
   return null;
 }
