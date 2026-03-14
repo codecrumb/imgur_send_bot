@@ -198,7 +198,10 @@ function isBotAddressed(message, env) {
   const entities = message.entities || message.caption_entities || [];
   const text = message.text || message.caption || "";
   for (const e of entities) {
-    if (e.type === "bot_command") return true;
+    if (e.type === "bot_command") {
+      const cmd = text.slice(e.offset, e.offset + e.length).toLowerCase().split("@")[0];
+      if (cmd === "/upload") return true;
+    }
     if (e.type === "mention" && env.BOT_USERNAME) {
       const mentioned = text.slice(e.offset, e.offset + e.length);
       if (mentioned.toLowerCase() === `@${env.BOT_USERNAME.toLowerCase()}`) return true;
