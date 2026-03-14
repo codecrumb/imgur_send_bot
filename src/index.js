@@ -67,12 +67,12 @@ async function processUpdate(update, env) {
   // Handle /upload with no media — show usage instructions
   if (message.text && message.text.toLowerCase().split("@")[0] === "/upload") {
     const inGroup = isGroupChat(message);
-    const trigger = inGroup
-      ? `• Tag @${env.BOT_USERNAME || "me"} or use /upload along with your media`
-      : `• Just send it directly — no command needed`;
+    const extra = inGroup
+      ? `\n• Tag @${env.BOT_USERNAME || "me"} or use /upload along with your media`
+      : ``;
     await sendMessage(
       chatId,
-      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL\n${trigger}\n\nSupported: JPG, PNG, GIF, WebP, MP4, WebM, MOV (up to 20 MB)`,
+      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${extra}\n\nSupported: JPG, PNG, GIF, WebP, MP4, WebM, MOV (up to 20 MB)`,
       env
     );
     return;
