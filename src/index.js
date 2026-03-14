@@ -8,6 +8,10 @@
  *                         e.g. "abc123,def456,ghi789"
  *                         Requests are spread randomly across all keys;
  *                         if one is rate-limited (429) the next is tried.
+ *   BOT_USERNAME        — (optional) bot's Telegram username without @
+ *                         e.g. "imgur_send_bot"
+ *                         When set, the bot only responds in groups when
+ *                         mentioned (@username) or a command is used.
  */
 
 export default {
@@ -56,6 +60,9 @@ async function processUpdate(update, env) {
   if (!message) return;
 
   const chatId = message.chat.id;
+
+  // In groups, only act when the bot is explicitly addressed
+  if (isGroupChat(message) && !isBotAddressed(message, env)) return;
 
   // Handle /start command
   if (message.text && message.text.startsWith("/start")) {
@@ -181,6 +188,23 @@ async function handleCallbackQuery(query, env) {
   }
 
   await answerCallbackQuery(queryId, env);
+}
+
+function isGroupChat(message) {
+  return message.chat.type === "group" || message.chat.type === "supergroup";
+}
+
+function isBotAddressed(message, env) {
+  const entities = message.entities || message.caption_entities || [];
+  const text = message.text || message.caption || "";
+  for (const e of entities) {
+    if (e.type === "bot_command") return true;
+    if (e.type === "mention" && env.BOT_USERNAME) {
+      const mentioned = text.slice(e.offset, e.offset + e.length);
+      if (mentioned.toLowerCase() === `@${env.BOT_USERNAME.toLowerCase()}`) return true;
+    }
+  }
+  return false;
 }
 
 const MEDIA_URL_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)(\?.*)?$/i;
