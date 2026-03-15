@@ -107,7 +107,7 @@ async function processUpdate(update, env) {
         inline_keyboard: [
           [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
           [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-          [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
+          [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
         ],
       });
     }
@@ -141,7 +141,7 @@ async function processUpdate(update, env) {
       inline_keyboard: [
         [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
         [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-        [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
+        [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
       ],
     });
   }
@@ -201,7 +201,7 @@ async function handleCallbackQuery(query, env) {
         inline_keyboard: [
           [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
           [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-          [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
+          [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
         ],
       }),
       answerCallbackQuery(queryId, env),
@@ -232,16 +232,13 @@ function isBotAddressed(message, env) {
   return false;
 }
 
-const MEDIA_URL_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)(\?.*)?$/i;
-
-// Returns the URL if the message is a single bare image/video URL, else null.
+// Returns the URL if the message is a single bare http(s) URL, else null.
 function getMediaUrl(message) {
   const text = message.text?.trim();
   if (!text || text.includes(" ")) return null;
   try {
     const u = new URL(text);
     if (!["http:", "https:"].includes(u.protocol)) return null;
-    if (!MEDIA_URL_RE.test(u.pathname)) return null;
     return text;
   } catch {
     return null;
@@ -406,7 +403,7 @@ async function mirrorToImgur(fileId, env) {
     }
 
     return {
-      url: `https://imgur.com/${imgurData.data.id}`,
+      url: imgurData.data.link,
       deletehash: imgurData.data.deletehash,
     };
   }
@@ -448,7 +445,7 @@ async function mirrorUrlToImgur(imageUrl, env) {
     }
 
     return {
-      url: `https://imgur.com/${imgurData.data.id}`,
+      url: imgurData.data.link,
       deletehash: imgurData.data.deletehash,
     };
   }
