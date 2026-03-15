@@ -85,7 +85,7 @@ async function processUpdate(update, env) {
       : message.from?.first_name || "there";
     await sendMessage(
       chatId,
-      `Hi ${username}! 👋\nSend me your images or videos, and I'll upload them to Imgur instantly.\nJust send a photo, video, GIF, or file (up to 20 MB) and I'll reply with the link!`,
+      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it to Imgur.\nYou'll get a shareable link instantly.\n\nSupported:\n• JPG, PNG, GIF, WebP\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
       env
     );
     return;
@@ -186,7 +186,7 @@ async function handleCallbackQuery(query, env) {
       console.error("deleteFromImgur error:", err);
     }
     await Promise.all([
-      editMessageText(message.chat.id, message.message_id, "Link deleted ✅", env),
+      editMessageText(message.chat.id, message.message_id, "Deleted ✅", env),
       answerCallbackQuery(queryId, env),
     ]);
     return;
