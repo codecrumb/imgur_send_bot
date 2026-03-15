@@ -454,13 +454,27 @@ async function mirrorUrlToImgur(imageUrl, env) {
 }
 
 async function deleteFromImgur(deletehash, env) {
-  const clientIds = getClientIds(env);
-  const res = await fetch(`https://api.imgur.com/3/image/${deletehash}`, {
-    method: "DELETE",
-    headers: { Authorization: `Client-ID ${clientIds[0]}` },
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => res.statusText);
-    throw new Error(`Imgur delete failed (${res.status}): ${errText}`);
+  const clientIds = shuffled(getClientIds(env));
+
+  let lastError;
+  for (const clientId of clientIds) {
+    const res = await fetch(`https://api.imgur.com/3/image/${deletehash}`, {
+      method: "DELETE",
+      headers: { Authorization: `Client-ID ${clientId}` },
+    });
+
+    if (res.status === 429) {
+      lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
+      continue;
+    }
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => res.statusText);
+      throw new Error(`Imgur delete failed (${res.status}): ${errText}`);
+    }
+
+    return;
   }
+
+  throw lastError ?? new Error("All Imgur Client IDs exhausted");
 }
