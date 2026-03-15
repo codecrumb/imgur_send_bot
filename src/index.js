@@ -94,18 +94,22 @@ async function processUpdate(update, env) {
   // Handle plain URL messages (e.g. https://example.com/photo.jpg)
   const imageUrl = getMediaUrl(message);
   if (imageUrl) {
-    try {
-      const { url: imgurUrl, deletehash } = await mirrorUrlToImgur(imageUrl, env);
-      await sendMessage(chatId, imgurUrl, env, {
+    const [result, statusMsg] = await Promise.all([
+      mirrorUrlToImgur(imageUrl, env).catch((err) => err),
+      sendMessage(chatId, "⬆️ Uploading...", env),
+    ]);
+    if (result instanceof Error) {
+      console.error("mirrorUrlToImgur error:", result);
+      await editMessageText(chatId, statusMsg.message_id, `Error uploading: ${result.message}`, env);
+    } else {
+      const { url: imgurUrl, deletehash } = result;
+      await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
         inline_keyboard: [
           [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
           [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
           [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
         ],
       });
-    } catch (err) {
-      console.error("mirrorUrlToImgur error:", err);
-      await sendMessage(chatId, `Error uploading: ${err.message}`, env);
     }
     return;
   }
@@ -124,18 +128,22 @@ async function processUpdate(update, env) {
     return;
   }
 
-  try {
-    const { url: imgurUrl, deletehash } = await mirrorToImgur(media.file_id, env);
-    await sendMessage(chatId, imgurUrl, env, {
+  const [result, statusMsg] = await Promise.all([
+    mirrorToImgur(media.file_id, env).catch((err) => err),
+    sendMessage(chatId, "⬆️ Uploading...", env),
+  ]);
+  if (result instanceof Error) {
+    console.error("mirrorToImgur error:", result);
+    await editMessageText(chatId, statusMsg.message_id, `Error uploading: ${result.message}`, env);
+  } else {
+    const { url: imgurUrl, deletehash } = result;
+    await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
       inline_keyboard: [
         [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
         [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
         [{ text: "🗑️ Delete from Imgur", callback_data: `delete:${deletehash}` }],
       ],
     });
-  } catch (err) {
-    console.error("mirrorToImgur error:", err);
-    await sendMessage(chatId, `Error uploading: ${err.message}`, env);
   }
 }
 
@@ -300,11 +308,13 @@ async function downloadTelegramFile(fileId, env) {
 async function sendMessage(chatId, text, env, replyMarkup) {
   const body = { chat_id: chatId, text };
   if (replyMarkup) body.reply_markup = replyMarkup;
-  await fetch(telegramApi("sendMessage", env), {
+  const res = await fetch(telegramApi("sendMessage", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  const data = await res.json();
+  return data.result;
 }
 
 async function editMessageText(chatId, messageId, text, env, replyMarkup) {
