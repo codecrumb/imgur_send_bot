@@ -403,7 +403,7 @@ async function mirrorToImgur(fileId, env) {
     }
 
     return {
-      url: imgurData.data.link,
+      url: `https://imgur.com/${imgurData.data.id}`,
       deletehash: imgurData.data.deletehash,
     };
   }
@@ -445,7 +445,7 @@ async function mirrorUrlToImgur(imageUrl, env) {
     }
 
     return {
-      url: imgurData.data.link,
+      url: `https://imgur.com/${imgurData.data.id}`,
       deletehash: imgurData.data.deletehash,
     };
   }
