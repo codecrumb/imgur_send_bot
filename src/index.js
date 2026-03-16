@@ -78,7 +78,7 @@ async function processUpdate(update, env, deferreds) {
       : ``;
     await sendMessage(
       chatId,
-      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${extra}\n\nSupported: JPG, PNG, GIF, WebP, MP4, WebM, MOV (up to 20 MB)`,
+      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${extra}\n\nSupported: JPG, PNG, GIF, MP4, WebM, MOV (up to 20 MB)`,
       env
     );
     return;
@@ -91,7 +91,7 @@ async function processUpdate(update, env, deferreds) {
       : message.from?.first_name || "there";
     await sendMessage(
       chatId,
-      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it to Imgur.\nYou'll get a shareable link instantly.\n\nSupported:\n• JPG, PNG, GIF, WebP\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
+      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it to Imgur.\nYou'll get a shareable link instantly.\n\nSupported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
       env
     );
     return;
@@ -469,6 +469,7 @@ function getMediaFile(message) {
   if (
     message.document &&
     message.document.mime_type &&
+    message.document.mime_type !== "image/webp" &&
     (message.document.mime_type.startsWith("image/") ||
       message.document.mime_type.startsWith("video/"))
   ) {
