@@ -277,50 +277,48 @@ async function handleMediaGroup(message, media, env) {
   const groupId = message.media_group_id;
   const chatId = message.chat.id;
 
-  console.log(`[album] handleMediaGroup groupId=${groupId} KV_bound=${!!env.MEDIA_GROUPS}`);
-  let group = await kvGetGroup(groupId, env);
-  console.log(`[album] initial KV read: ${group ? "found" : "null"}`);
-
-  if (!group) {
-    // First item: send status message and init KV entry
-    const statusMsg = await sendMessage(chatId, "⬆️ Uploading...", env);
-    if (!statusMsg?.message_id) return;
-    group = {
-      chatId,
-      statusMsgId: statusMsg.message_id,
-      firstSeen: Date.now(),
-      fileIds: [media.file_id],
-      processed: false,
-    };
-  } else {
-    // Subsequent items: append file_id
-    group.fileIds.push(media.file_id);
+  // Each invocation writes its own key — no write conflicts between simultaneous photos.
+  if (env.MEDIA_GROUPS) {
+    await env.MEDIA_GROUPS.put(
+      `mg:${groupId}:${media.file_id}`,
+      JSON.stringify({ chatId }),
+      { expirationTtl: 30 }
+    );
   }
 
-  await kvPutGroup(groupId, group, env);
-
-  // Start deferred processing and return the promise.
-  // The caller (handleWebhook) registers it with ctx.waitUntil before responding.
+  // Start deferred and return promise for ctx.waitUntil in handleWebhook.
   return (async () => {
-    console.log(`[album] deferred started for group ${groupId}`);
     await new Promise((r) => setTimeout(r, 2000));
-    console.log(`[album] 2s elapsed, reading KV for group ${groupId}`);
+    if (!env.MEDIA_GROUPS) return;
 
-    const latest = await kvGetGroup(groupId, env);
-    console.log(`[album] KV read result: ${latest ? JSON.stringify(latest) : "null"}`);
-    if (!latest || latest.processed) return;
+    // First deferred to write the lock key wins; others exit early.
+    const lockKey = `mg:${groupId}:_lock`;
+    const alreadyLocked = await env.MEDIA_GROUPS.get(lockKey);
+    if (alreadyLocked) return;
+    await env.MEDIA_GROUPS.put(lockKey, "1", { expirationTtl: 30 });
 
-    latest.processed = true;
-    await kvPutGroup(groupId, latest, env);
+    // Collect all file IDs written by the individual invocations.
+    const listed = await env.MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
+    const fileKeys = listed.keys.filter((k) => !k.name.endsWith(":_lock"));
+    if (fileKeys.length === 0) return;
 
-    await processMediaGroup(latest, groupId, env);
+    const firstVal = await env.MEDIA_GROUPS.get(fileKeys[0].name);
+    const { chatId: resolvedChatId } = JSON.parse(firstVal || "{}");
+    const fileIds = fileKeys.map((k) => k.name.slice(`mg:${groupId}:`.length));
+
+    await processMediaGroup(resolvedChatId ?? chatId, fileIds, groupId, env);
   })();
 }
 
-async function processMediaGroup(group, groupId, env) {
+async function processMediaGroup(chatId, fileIds, groupId, env) {
+  // Status message is sent here, by the single winning deferred — never by individual invocations.
+  const statusMsg = await sendMessage(chatId, "⬆️ Uploading...", env);
+  const statusMsgId = statusMsg?.message_id;
+  if (!statusMsgId) return;
+
   try {
     const imageIds = [];
-    for (const fileId of group.fileIds) {
+    for (const fileId of fileIds) {
       try {
         const { id } = await mirrorToImgurRaw(fileId, env);
         imageIds.push(id);
@@ -330,12 +328,7 @@ async function processMediaGroup(group, groupId, env) {
     }
 
     if (imageIds.length === 0) {
-      await editMessageText(
-        group.chatId,
-        group.statusMsgId,
-        "❌ All uploads failed. Please try again.",
-        env
-      );
+      await editMessageText(chatId, statusMsgId, "❌ All uploads failed. Please try again.", env);
       return;
     }
 
@@ -344,12 +337,12 @@ async function processMediaGroup(group, groupId, env) {
       ({ id: albumId, deletehash } = await createImgurAlbum(imageIds, env));
     } catch (err) {
       console.error("createImgurAlbum error:", err);
-      await editMessageText(group.chatId, group.statusMsgId, `❌ ${formatUploadError(err)}`, env, null, "HTML");
+      await editMessageText(chatId, statusMsgId, `❌ ${formatUploadError(err)}`, env, null, "HTML");
       return;
     }
     const albumUrl = `https://imgur.com/a/${albumId}`;
 
-    await editMessageText(group.chatId, group.statusMsgId, albumUrl, env, {
+    await editMessageText(chatId, statusMsgId, albumUrl, env, {
       inline_keyboard: [
         [{ text: "Copy Link", copy_text: { text: albumUrl } }],
         [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(albumUrl)}` }],
@@ -365,20 +358,10 @@ async function processMediaGroup(group, groupId, env) {
 // KV helpers for media group state
 // ---------------------------------------------------------------------------
 
-async function kvGetGroup(groupId, env) {
-  if (!env.MEDIA_GROUPS) return null;
-  const val = await env.MEDIA_GROUPS.get(`mg:${groupId}`);
-  return val ? JSON.parse(val) : null;
-}
-
-async function kvPutGroup(groupId, data, env) {
-  if (!env.MEDIA_GROUPS) return;
-  await env.MEDIA_GROUPS.put(`mg:${groupId}`, JSON.stringify(data), { expirationTtl: 30 });
-}
-
 async function kvDeleteGroup(groupId, env) {
   if (!env.MEDIA_GROUPS) return;
-  await env.MEDIA_GROUPS.delete(`mg:${groupId}`);
+  const listed = await env.MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
+  await Promise.all(listed.keys.map((k) => env.MEDIA_GROUPS.delete(k.name)));
 }
 
 // ---------------------------------------------------------------------------
