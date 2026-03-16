@@ -450,14 +450,16 @@ function isBotAddressed(message, env) {
   return false;
 }
 
-// Returns the URL if the message is a single bare http(s) URL, else null.
+// Returns the first http(s) URL found in the message text, else null.
 function getMediaUrl(message) {
   const text = message.text?.trim();
-  if (!text || text.includes(" ")) return null;
+  if (!text) return null;
+  const match = text.match(/\bhttps?:\/\/\S+/);
+  if (!match) return null;
+  const url = match[0].replace(/[.,;!?)]+$/, ""); // strip trailing punctuation
   try {
-    const u = new URL(text);
-    if (!["http:", "https:"].includes(u.protocol)) return null;
-    return text;
+    new URL(url);
+    return url;
   } catch {
     return null;
   }
