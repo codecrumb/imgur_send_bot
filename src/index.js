@@ -41,8 +41,9 @@ async function handleWebhook(request, env, ctx) {
     return new Response("Bad JSON", { status: 400 });
   }
 
-  const p = processUpdate(update, env, ctx);
-  ctx ? ctx.waitUntil(p) : await p;
+  // Await the fast prep phase; it returns a deferred promise if background work is needed.
+  const deferred = await processUpdate(update, env);
+  if (deferred && ctx) ctx.waitUntil(deferred);
 
   return new Response("OK", { status: 200 });
 }
@@ -51,7 +52,7 @@ async function handleWebhook(request, env, ctx) {
 // Core logic
 // ---------------------------------------------------------------------------
 
-async function processUpdate(update, env, ctx) {
+async function processUpdate(update, env) {
   // Handle delete button presses
   if (update.callback_query) {
     await handleCallbackQuery(update.callback_query, env);
@@ -119,10 +120,11 @@ async function processUpdate(update, env, ctx) {
   const media = getMediaFile(message);
   if (!media) return;
 
-  // Branch on media_group_id — collect and upload as album
+  // Branch on media_group_id — collect and upload as album.
+  // Returns the deferred promise so handleWebhook can register it with ctx.waitUntil
+  // at the top level (nested waitUntil is not reliable in CF Workers).
   if (message.media_group_id) {
-    await handleMediaGroup(message, media, env, ctx);
-    return;
+    return handleMediaGroup(message, media, env);
   }
 
   const MAX_BYTES = 20 * 1024 * 1024; // 20 MB — Telegram Bot API limit
@@ -271,7 +273,7 @@ async function handleCallbackQuery(query, env) {
 // Media group (album) handling
 // ---------------------------------------------------------------------------
 
-async function handleMediaGroup(message, media, env, ctx) {
+async function handleMediaGroup(message, media, env) {
   const groupId = message.media_group_id;
   const chatId = message.chat.id;
 
@@ -295,8 +297,9 @@ async function handleMediaGroup(message, media, env, ctx) {
 
   await kvPutGroup(groupId, group, env);
 
-  // Schedule deferred album processing after 2s to collect stragglers
-  const deferred = async () => {
+  // Start deferred processing and return the promise.
+  // The caller (handleWebhook) registers it with ctx.waitUntil before responding.
+  return (async () => {
     await new Promise((r) => setTimeout(r, 2000));
 
     const latest = await kvGetGroup(groupId, env);
@@ -306,13 +309,7 @@ async function handleMediaGroup(message, media, env, ctx) {
     await kvPutGroup(groupId, latest, env);
 
     await processMediaGroup(latest, groupId, env);
-  };
-
-  if (ctx) {
-    ctx.waitUntil(deferred());
-  } else {
-    await deferred();
-  }
+  })();
 }
 
 async function processMediaGroup(group, groupId, env) {
@@ -337,7 +334,14 @@ async function processMediaGroup(group, groupId, env) {
       return;
     }
 
-    const { id: albumId, deletehash } = await createImgurAlbum(imageIds, env);
+    let albumId, deletehash;
+    try {
+      ({ id: albumId, deletehash } = await createImgurAlbum(imageIds, env));
+    } catch (err) {
+      console.error("createImgurAlbum error:", err);
+      await editMessageText(group.chatId, group.statusMsgId, `❌ ${formatUploadError(err)}`, env, null, "HTML");
+      return;
+    }
     const albumUrl = `https://imgur.com/a/${albumId}`;
 
     await editMessageText(group.chatId, group.statusMsgId, albumUrl, env, {
