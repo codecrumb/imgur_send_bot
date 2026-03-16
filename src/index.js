@@ -120,6 +120,18 @@ async function processUpdate(update, env, deferreds) {
     return;
   }
 
+  // Check for unsupported file types we explicitly block (e.g. WebP documents).
+  // Only notify the user for standalone files — silently skip in albums.
+  const unsupportedType = getUnsupportedDocumentType(message);
+  if (unsupportedType) {
+    await sendMessage(
+      chatId,
+      `❌ ${unsupportedType} isn't supported by Imgur. Supported formats: JPG, PNG, GIF, MP4, WebM, MOV.`,
+      env
+    );
+    return;
+  }
+
   const media = getMediaFile(message);
   if (!media) return;
 
@@ -449,6 +461,15 @@ function getMediaUrl(message) {
   } catch {
     return null;
   }
+}
+
+// Returns a human-readable type name if the message is a document with an
+// unsupported format, or null if it's fine (or not a document).
+function getUnsupportedDocumentType(message) {
+  const mime = message.document?.mime_type;
+  if (!mime) return null;
+  if (mime === "image/webp") return "WebP";
+  return null;
 }
 
 // Returns { file_id, file_size } for supported media types, or null.
