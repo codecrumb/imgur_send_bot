@@ -41,9 +41,10 @@ async function handleWebhook(request, env, ctx) {
     return new Response("Bad JSON", { status: 400 });
   }
 
-  // Await the fast prep phase; it returns a deferred promise if background work is needed.
-  const deferred = await processUpdate(update, env);
-  if (deferred && ctx) ctx.waitUntil(deferred);
+  // Collect any background work registered during processUpdate, then return OK fast.
+  const deferreds = [];
+  await processUpdate(update, env, deferreds);
+  for (const d of deferreds) ctx?.waitUntil(d);
 
   return new Response("OK", { status: 200 });
 }
@@ -52,7 +53,7 @@ async function handleWebhook(request, env, ctx) {
 // Core logic
 // ---------------------------------------------------------------------------
 
-async function processUpdate(update, env) {
+async function processUpdate(update, env, deferreds = []) {
   // Handle delete button presses
   if (update.callback_query) {
     await handleCallbackQuery(update.callback_query, env);
@@ -121,10 +122,9 @@ async function processUpdate(update, env) {
   if (!media) return;
 
   // Branch on media_group_id — collect and upload as album.
-  // Returns the deferred promise so handleWebhook can register it with ctx.waitUntil
-  // at the top level (nested waitUntil is not reliable in CF Workers).
   if (message.media_group_id) {
-    return handleMediaGroup(message, media, env);
+    await handleMediaGroup(message, media, env, deferreds);
+    return;
   }
 
   const MAX_BYTES = 20 * 1024 * 1024; // 20 MB — Telegram Bot API limit
@@ -273,7 +273,7 @@ async function handleCallbackQuery(query, env) {
 // Media group (album) handling
 // ---------------------------------------------------------------------------
 
-async function handleMediaGroup(message, media, env) {
+async function handleMediaGroup(message, media, env, deferreds) {
   const groupId = message.media_group_id;
   const chatId = message.chat.id;
 
@@ -286,8 +286,9 @@ async function handleMediaGroup(message, media, env) {
     );
   }
 
-  // Start deferred and return promise for ctx.waitUntil in handleWebhook.
-  return (async () => {
+  // Push the deferred into the array; handleWebhook registers it with ctx.waitUntil
+  // BEFORE returning OK — so Telegram gets a fast response and never retries.
+  deferreds.push((async () => {
     await new Promise((r) => setTimeout(r, 2000));
     if (!env.MEDIA_GROUPS) return;
 
@@ -307,7 +308,7 @@ async function handleMediaGroup(message, media, env) {
     const fileIds = fileKeys.map((k) => k.name.slice(`mg:${groupId}:`.length));
 
     await processMediaGroup(resolvedChatId ?? chatId, fileIds, groupId, env);
-  })();
+  })());
 }
 
 async function processMediaGroup(chatId, fileIds, groupId, env) {
