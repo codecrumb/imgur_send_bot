@@ -31,7 +31,6 @@ head_sampling_rate = 1
 # Create with: wrangler kv namespace create MEDIA_GROUPS
 # (If deploying via Cloudflare dashboard, set the binding there instead.)
 #
-# [[kv_namespaces]]
-# binding = "MEDIA_GROUPS"
-# id = "YOUR_KV_NAMESPACE_ID"
-# preview_id = "YOUR_KV_NAMESPACE_PREVIEW_ID"
+[[kv_namespaces]]
+binding = "MEDIA_GROUPS"
+id = "bf5d70b9337a40598d80e7d13f94c742"
