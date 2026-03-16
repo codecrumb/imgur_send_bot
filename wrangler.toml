@@ -25,3 +25,7 @@ head_sampling_rate = 1
 # For local dev you can also use a .dev.vars file (never commit it):
 #   TELEGRAM_BOT_TOKEN=123456:ABC...
 #   IMGUR_CLIENT_IDS=id1,id2,id3
+
+[[kv_namespaces]]
+binding = "IMGUR_BOT_MEDIA_GROUPS"
+id = "bf5d70b9337a40598d80e7d13f94c742"

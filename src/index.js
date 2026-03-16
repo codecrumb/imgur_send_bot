@@ -12,14 +12,17 @@
  *                         e.g. "imgur_send_bot"
  *                         When set, the bot only responds in groups when
  *                         mentioned (@username) or a command is used.
+ *
+ * KV namespace (bound in wrangler.toml):
+ *   IMGUR_BOT_MEDIA_GROUPS — stores per-photo keys for multi-photo albums
  */
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "POST" && url.pathname === "/webhook") {
-      return handleWebhook(request, env);
+      return handleWebhook(request, env, ctx);
     }
 
     return new Response("Telegram→Imgur bot is running.", { status: 200 });
@@ -30,7 +33,7 @@ export default {
 // Webhook handler
 // ---------------------------------------------------------------------------
 
-async function handleWebhook(request, env) {
+async function handleWebhook(request, env, ctx) {
   let update;
   try {
     update = await request.json();
@@ -38,9 +41,12 @@ async function handleWebhook(request, env) {
     return new Response("Bad JSON", { status: 400 });
   }
 
-  env.ctx
-    ? env.ctx.waitUntil(processUpdate(update, env))
-    : await processUpdate(update, env);
+  const deferreds = [];
+  await processUpdate(update, env, deferreds);
+
+  for (const d of deferreds) {
+    ctx.waitUntil(d);
+  }
 
   return new Response("OK", { status: 200 });
 }
@@ -49,7 +55,7 @@ async function handleWebhook(request, env) {
 // Core logic
 // ---------------------------------------------------------------------------
 
-async function processUpdate(update, env) {
+async function processUpdate(update, env, deferreds) {
   // Handle delete button presses
   if (update.callback_query) {
     await handleCallbackQuery(update.callback_query, env);
@@ -117,7 +123,14 @@ async function processUpdate(update, env) {
   const media = getMediaFile(message);
   if (!media) return;
 
-  const MAX_BYTES = 20 * 1024 * 1024; // 20 MB — Telegram Bot API limit
+  // Multi-photo send — collect and create an album
+  if (message.media_group_id) {
+    await handleMediaGroup(message, media, env, deferreds);
+    return;
+  }
+
+  // Single file upload
+  const MAX_BYTES = 20 * 1024 * 1024;
   if (media.file_size && media.file_size > MAX_BYTES) {
     const mb = (media.file_size / (1024 * 1024)).toFixed(1);
     await sendMessage(
@@ -147,6 +160,123 @@ async function processUpdate(update, env) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Media group (album) handler
+// ---------------------------------------------------------------------------
+
+async function handleMediaGroup(message, media, env, deferreds) {
+  const groupId = message.media_group_id;
+  const chatId = message.chat.id;
+
+  if (!env.IMGUR_BOT_MEDIA_GROUPS) {
+    console.error("IMGUR_BOT_MEDIA_GROUPS KV binding is missing");
+    return;
+  }
+
+  const MAX_BYTES = 20 * 1024 * 1024;
+  if (media.file_size && media.file_size > MAX_BYTES) {
+    console.log(`Skipping oversized file ${media.file_id} in group ${groupId}`);
+    return;
+  }
+
+  // Write one key per file — independent writes, no race conflicts
+  const kvKey = `mg:${groupId}:${media.file_id}`;
+  await env.IMGUR_BOT_MEDIA_GROUPS.put(
+    kvKey,
+    JSON.stringify({ chatId, fileId: media.file_id }),
+    { expirationTtl: 30 }
+  );
+
+  // Push a deferred — handleWebhook will register it with ctx.waitUntil
+  // before returning "OK" to Telegram.
+  deferreds.push((async () => {
+    // Wait for Telegram to deliver all photos in the group
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const lockKey = `mg:${groupId}:_lock`;
+
+    // First deferred to write the lock wins; others exit early
+    const existingLock = await env.IMGUR_BOT_MEDIA_GROUPS.get(lockKey);
+    if (existingLock) return;
+
+    await env.IMGUR_BOT_MEDIA_GROUPS.put(lockKey, "1", { expirationTtl: 30 });
+
+    try {
+      // List all per-file keys for this group
+      const listed = await env.IMGUR_BOT_MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
+      const fileKeys = listed.keys.filter((k) => !k.name.endsWith(":_lock"));
+
+      if (fileKeys.length === 0) return;
+
+      const fileDataList = await Promise.all(
+        fileKeys.map((k) => env.IMGUR_BOT_MEDIA_GROUPS.get(k.name, { type: "json" }))
+      );
+      const files = fileDataList.filter(Boolean);
+
+      if (files.length === 0) return;
+
+      const statusMsg = await sendMessage(chatId, "⬆️ Uploading...", env);
+
+      // Upload each file, collect { id, deletehash }
+      const uploaded = [];
+      for (const f of files) {
+        try {
+          const result = await mirrorToImgurRaw(f.fileId, env);
+          uploaded.push(result);
+        } catch (err) {
+          console.error(`Failed to upload file ${f.fileId}:`, err);
+        }
+      }
+
+      if (uploaded.length === 0) {
+        await editMessageText(chatId, statusMsg.message_id, "❌ Failed to upload any images.", env, null, "HTML");
+        return;
+      }
+
+      // Only one image succeeded — treat as single upload
+      if (uploaded.length === 1) {
+        const { id, deletehash } = uploaded[0];
+        const imgurUrl = `https://imgur.com/${id}`;
+        await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
+          inline_keyboard: [
+            [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
+            [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+            [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
+          ],
+        });
+        return;
+      }
+
+      // Create an album from all uploaded images
+      try {
+        const deletehashes = uploaded.map((r) => r.deletehash);
+        const album = await createImgurAlbum(deletehashes, env);
+        const albumUrl = `https://imgur.com/a/${album.id}`;
+        await editMessageText(chatId, statusMsg.message_id, albumUrl, env, {
+          inline_keyboard: [
+            [{ text: "Copy Link", copy_text: { text: albumUrl } }],
+            [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(albumUrl)}` }],
+            [{ text: "🗑️ Delete", callback_data: `delete:${album.deletehash}` }],
+          ],
+        });
+      } catch (err) {
+        console.error("createImgurAlbum error:", err);
+        // Fallback: post individual links
+        const links = uploaded.map((r) => `https://imgur.com/${r.id}`).join("\n");
+        await editMessageText(chatId, statusMsg.message_id, links, env);
+      }
+    } finally {
+      // Clean up all KV keys for this group
+      const toDelete = await env.IMGUR_BOT_MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
+      await Promise.all(toDelete.keys.map((k) => env.IMGUR_BOT_MEDIA_GROUPS.delete(k.name)));
+    }
+  })());
+}
+
+// ---------------------------------------------------------------------------
+// Callback query handler
+// ---------------------------------------------------------------------------
+
 async function handleCallbackQuery(query, env) {
   const { id: queryId, message, data } = query;
 
@@ -158,17 +288,21 @@ async function handleCallbackQuery(query, env) {
   // Step 1: first tap on delete — ask for confirmation
   if (data.startsWith("delete:")) {
     const deletehash = data.slice("delete:".length);
-    const imgurId = message.text?.split("/").pop() ?? "";
+    const msgText = message.text ?? "";
+    const isAlbum = msgText.includes("imgur.com/a/");
+    const imgurId = msgText.split("/").pop() ?? "";
     await Promise.all([
       editMessageText(
         message.chat.id,
         message.message_id,
-        "Are you sure you want to delete this image?",
+        isAlbum
+          ? "Are you sure you want to delete this album?"
+          : "Are you sure you want to delete this image?",
         env,
         {
           inline_keyboard: [
-            [{ text: "✅ Yes, delete", callback_data: `confirm:${deletehash}` }],
-            [{ text: "↩️ Cancel", callback_data: `cancel:${imgurId}:${deletehash}` }],
+            [{ text: "✅ Yes, delete", callback_data: `confirm:${isAlbum ? "album" : "img"}:${deletehash}` }],
+            [{ text: "↩️ Cancel", callback_data: `cancel:${isAlbum ? "a" : "i"}:${imgurId}:${deletehash}` }],
           ],
         }
       ),
@@ -179,11 +313,28 @@ async function handleCallbackQuery(query, env) {
 
   // Step 2a: confirmed — delete and mark as deleted
   if (data.startsWith("confirm:")) {
-    const deletehash = data.slice("confirm:".length);
+    const rest = data.slice("confirm:".length);
+    let deletehash;
+    let isAlbum = false;
+
+    if (rest.startsWith("album:")) {
+      isAlbum = true;
+      deletehash = rest.slice("album:".length);
+    } else if (rest.startsWith("img:")) {
+      deletehash = rest.slice("img:".length);
+    } else {
+      // Legacy: confirm:{deletehash}
+      deletehash = rest;
+    }
+
     try {
-      await deleteFromImgur(deletehash, env);
+      if (isAlbum) {
+        await deleteAlbumFromImgur(deletehash, env);
+      } else {
+        await deleteFromImgur(deletehash, env);
+      }
     } catch (err) {
-      console.error("deleteFromImgur error:", err);
+      console.error("delete error:", err);
     }
     await Promise.all([
       editMessageText(message.chat.id, message.message_id, "Deleted ✅", env),
@@ -194,8 +345,26 @@ async function handleCallbackQuery(query, env) {
 
   // Step 2b: cancelled — restore original message
   if (data.startsWith("cancel:")) {
-    const [imgurId, deletehash] = data.slice("cancel:".length).split(":");
-    const imgurUrl = `https://imgur.com/${imgurId}`;
+    const rest = data.slice("cancel:".length);
+    let imgurUrl, deletehash;
+
+    if (rest.startsWith("a:")) {
+      // cancel:a:{id}:{hash} — album
+      const parts = rest.slice("a:".length).split(":");
+      imgurUrl = `https://imgur.com/a/${parts[0]}`;
+      deletehash = parts[1];
+    } else if (rest.startsWith("i:")) {
+      // cancel:i:{id}:{hash} — image
+      const parts = rest.slice("i:".length).split(":");
+      imgurUrl = `https://imgur.com/${parts[0]}`;
+      deletehash = parts[1];
+    } else {
+      // Legacy: cancel:{imgurId}:{deletehash}
+      const [imgurId, dh] = rest.split(":");
+      imgurUrl = `https://imgur.com/${imgurId}`;
+      deletehash = dh;
+    }
+
     await Promise.all([
       editMessageText(message.chat.id, message.message_id, imgurUrl, env, {
         inline_keyboard: [
@@ -211,6 +380,10 @@ async function handleCallbackQuery(query, env) {
 
   await answerCallbackQuery(queryId, env);
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function isGroupChat(message) {
   return message.chat.type === "group" || message.chat.type === "supergroup";
@@ -337,10 +510,6 @@ async function answerCallbackQuery(callbackQueryId, env) {
 // Imgur client-ID pool
 // ---------------------------------------------------------------------------
 
-/**
- * Returns the list of Client IDs from the environment.
- * Accepts a comma-separated IMGUR_CLIENT_IDS secret.
- */
 function getClientIds(env) {
   const raw = env.IMGUR_CLIENT_IDS || "";
   const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -350,10 +519,6 @@ function getClientIds(env) {
   return ids;
 }
 
-/**
- * Shuffles an array in-place using Fisher-Yates.
- * Starting from a random position distributes load across all keys evenly.
- */
 function shuffled(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -367,11 +532,6 @@ function shuffled(arr) {
 // Imgur upload
 // ---------------------------------------------------------------------------
 
-/**
- * Downloads the Telegram file, then tries each Imgur Client ID (in random
- * order) until one succeeds.  Falls back to the next key on 429/5xx.
- */
-
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -382,12 +542,10 @@ function formatUploadError(err) {
   return `${friendly} <tg-spoiler>${escapeHtml(err.details)}</tg-spoiler>`;
 }
 
-// Transient errors worth retrying with a different key.
 function isTransient(status) {
   return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
 
-// Human-friendly upload error shown to the user.
 function uploadErrorMessage(status, imgurError) {
   if (imgurError) return imgurError;
   if (status === 429) return "Imgur is rate-limiting us right now. Try again in a moment.";
@@ -396,7 +554,8 @@ function uploadErrorMessage(status, imgurError) {
   return `Upload failed (${status}). Please try again.`;
 }
 
-async function mirrorToImgur(fileId, env) {
+// Uploads a Telegram file to Imgur, returns { id, deletehash }.
+async function mirrorToImgurRaw(fileId, env) {
   const fileBytes = await downloadTelegramFile(fileId, env);
   const clientIds = shuffled(getClientIds(env));
 
@@ -404,9 +563,7 @@ async function mirrorToImgur(fileId, env) {
   for (const clientId of clientIds) {
     const imgurRes = await fetch("https://api.imgur.com/3/image", {
       method: "POST",
-      headers: {
-        Authorization: `Client-ID ${clientId}`,
-      },
+      headers: { Authorization: `Client-ID ${clientId}` },
       body: fileBytes,
     });
 
@@ -415,7 +572,7 @@ async function mirrorToImgur(fileId, env) {
 
     if (isTransient(imgurRes.status)) {
       lastError = new Error(uploadErrorMessage(imgurRes.status));
-      continue; // try next key
+      continue;
     }
 
     const rawBody = await imgurRes.text().catch(() => "");
@@ -428,16 +585,19 @@ async function mirrorToImgur(fileId, env) {
       throw err;
     }
 
-    return {
-      url: `https://imgur.com/${imgurData.data.id}`,
-      deletehash: imgurData.data.deletehash,
-    };
+    return { id: imgurData.data.id, deletehash: imgurData.data.deletehash };
   }
 
   throw lastError ?? new Error("All Imgur Client IDs exhausted");
 }
 
-// Uploads an image by URL directly — Imgur fetches it server-side, no download needed.
+// Wraps mirrorToImgurRaw, adding the full URL (used by single-file flow).
+async function mirrorToImgur(fileId, env) {
+  const { id, deletehash } = await mirrorToImgurRaw(fileId, env);
+  return { url: `https://imgur.com/${id}`, deletehash };
+}
+
+// Uploads an image by URL directly — Imgur fetches it server-side.
 async function mirrorUrlToImgur(imageUrl, env) {
   const clientIds = shuffled(getClientIds(env));
 
@@ -479,6 +639,45 @@ async function mirrorUrlToImgur(imageUrl, env) {
   throw lastError ?? new Error("All Imgur Client IDs exhausted");
 }
 
+// Creates an anonymous Imgur album from an array of deletehashes.
+async function createImgurAlbum(deletehashes, env) {
+  const clientIds = shuffled(getClientIds(env));
+
+  let lastError;
+  for (const clientId of clientIds) {
+    const imgurRes = await fetch("https://api.imgur.com/3/album", {
+      method: "POST",
+      headers: {
+        Authorization: `Client-ID ${clientId}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ deletehashes }),
+    });
+
+    const remaining = imgurRes.headers.get("X-RateLimit-ClientRemaining");
+    console.log(`createImgurAlbum key …${clientId.slice(-6)}: status=${imgurRes.status} remaining=${remaining ?? "?"}`);
+
+    if (isTransient(imgurRes.status)) {
+      lastError = new Error(uploadErrorMessage(imgurRes.status));
+      continue;
+    }
+
+    const rawBody = await imgurRes.text().catch(() => "");
+    const imgurData = rawBody ? JSON.parse(rawBody) : null;
+    const imgurError = imgurData?.data?.error;
+
+    if (!imgurRes.ok || !imgurData?.success) {
+      const err = new Error(uploadErrorMessage(imgurRes.status, imgurError));
+      err.details = rawBody;
+      throw err;
+    }
+
+    return { id: imgurData.data.id, deletehash: imgurData.data.deletehash };
+  }
+
+  throw lastError ?? new Error("All Imgur Client IDs exhausted");
+}
+
 async function deleteFromImgur(deletehash, env) {
   const clientIds = shuffled(getClientIds(env));
 
@@ -496,6 +695,31 @@ async function deleteFromImgur(deletehash, env) {
 
     if (!res.ok) {
       throw new Error("Couldn't delete the image. Try again later.");
+    }
+
+    return;
+  }
+
+  throw lastError ?? new Error("All Imgur Client IDs exhausted");
+}
+
+async function deleteAlbumFromImgur(deletehash, env) {
+  const clientIds = shuffled(getClientIds(env));
+
+  let lastError;
+  for (const clientId of clientIds) {
+    const res = await fetch(`https://api.imgur.com/3/album/${deletehash}`, {
+      method: "DELETE",
+      headers: { Authorization: `Client-ID ${clientId}` },
+    });
+
+    if (isTransient(res.status)) {
+      lastError = new Error(`Delete failed (${res.status}), retrying...`);
+      continue;
+    }
+
+    if (!res.ok) {
+      throw new Error("Couldn't delete the album. Try again later.");
     }
 
     return;
