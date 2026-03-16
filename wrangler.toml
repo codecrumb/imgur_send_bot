@@ -25,3 +25,11 @@ head_sampling_rate = 1
 # For local dev you can also use a .dev.vars file (never commit it):
 #   TELEGRAM_BOT_TOKEN=123456:ABC...
 #   IMGUR_CLIENT_IDS=id1,id2,id3
+
+# KV namespace for media group (album) state.
+# Create with: wrangler kv namespace create MEDIA_GROUPS
+# Then fill in the id below, and optionally a preview_id for local dev.
+[[kv_namespaces]]
+binding = "MEDIA_GROUPS"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_YOUR_KV_NAMESPACE_PREVIEW_ID"

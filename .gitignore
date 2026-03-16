@@ -2,7 +2,7 @@ node_modules/
 .dev.vars
 .wrangler/
 dist/
-.code-workspace
+*.code-workspace
 *.log
 *.env
 *.local
