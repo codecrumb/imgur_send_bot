@@ -184,91 +184,121 @@ async function handleMediaGroup(message, media, env, deferreds) {
   await env.IMGUR_BOT_MEDIA_GROUPS.put(
     kvKey,
     JSON.stringify({ chatId, fileId: media.file_id }),
-    { expirationTtl: 30 }
+    { expirationTtl: 60 }
   );
 
   // Push a deferred — handleWebhook will register it with ctx.waitUntil
   // before returning "OK" to Telegram.
   deferreds.push((async () => {
-    // Wait for Telegram to deliver all photos in the group
-    await new Promise((r) => setTimeout(r, 2000));
-
-    const lockKey = `mg:${groupId}:_lock`;
-
-    // First deferred to write the lock wins; others exit early
-    const existingLock = await env.IMGUR_BOT_MEDIA_GROUPS.get(lockKey);
-    if (existingLock) return;
-
-    await env.IMGUR_BOT_MEDIA_GROUPS.put(lockKey, "1", { expirationTtl: 30 });
-
     try {
-      // List all per-file keys for this group
-      const listed = await env.IMGUR_BOT_MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
-      const fileKeys = listed.keys.filter((k) => !k.name.endsWith(":_lock"));
+      // Wait for Telegram to deliver all photos in the group.
+      // Random jitter (0–300ms) staggers simultaneous deferreds to reduce lock races.
+      await new Promise((r) => setTimeout(r, 2000 + Math.random() * 300));
 
-      if (fileKeys.length === 0) return;
+      const lockKey = `mg:${groupId}:_lock`;
 
-      const fileDataList = await Promise.all(
-        fileKeys.map((k) => env.IMGUR_BOT_MEDIA_GROUPS.get(k.name, { type: "json" }))
-      );
-      const files = fileDataList.filter(Boolean);
-
-      if (files.length === 0) return;
-
-      const statusMsg = await sendMessage(chatId, "⬆️ Uploading...", env);
-
-      // Upload each file, collect { id, deletehash }
-      const uploaded = [];
-      for (const f of files) {
-        try {
-          const result = await mirrorToImgurRaw(f.fileId, env);
-          uploaded.push(result);
-        } catch (err) {
-          console.error(`Failed to upload file ${f.fileId}:`, err);
-        }
-      }
-
-      if (uploaded.length === 0) {
-        await editMessageText(chatId, statusMsg.message_id, "❌ Failed to upload any images.", env, null, "HTML");
+      // First deferred to write the lock wins; others exit early.
+      const existingLock = await env.IMGUR_BOT_MEDIA_GROUPS.get(lockKey);
+      if (existingLock) {
+        console.log(`mg:${groupId}: lock already held, exiting`);
         return;
       }
 
-      // Only one image succeeded — treat as single upload
-      if (uploaded.length === 1) {
-        const { id, deletehash } = uploaded[0];
-        const imgurUrl = `https://imgur.com/${id}`;
-        await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
-          inline_keyboard: [
-            [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
-            [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-            [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
-          ],
-        });
-        return;
-      }
+      await env.IMGUR_BOT_MEDIA_GROUPS.put(lockKey, "1", { expirationTtl: 60 });
+      console.log(`mg:${groupId}: won lock`);
 
-      // Create an album from all uploaded images
       try {
-        const deletehashes = uploaded.map((r) => r.deletehash);
-        const album = await createImgurAlbum(deletehashes, env);
-        const albumUrl = `https://imgur.com/a/${album.id}`;
-        await editMessageText(chatId, statusMsg.message_id, albumUrl, env, {
-          inline_keyboard: [
-            [{ text: "Copy Link", copy_text: { text: albumUrl } }],
-            [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(albumUrl)}` }],
-            [{ text: "🗑️ Delete", callback_data: `delete:${album.deletehash}` }],
-          ],
-        });
-      } catch (err) {
-        console.error("createImgurAlbum error:", err);
-        // Fallback: post individual links
-        const links = uploaded.map((r) => `https://imgur.com/${r.id}`).join("\n");
-        await editMessageText(chatId, statusMsg.message_id, links, env);
+        // List all per-file keys for this group.
+        // KV list() has eventual consistency lag — if it misses our own key,
+        // add it explicitly via the closure-captured kvKey.
+        const listed = await env.IMGUR_BOT_MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
+        console.log(`mg:${groupId}: list returned ${listed.keys.length} keys`);
+
+        let fileKeys = listed.keys.filter((k) => !k.name.endsWith(":_lock"));
+
+        if (!fileKeys.some((k) => k.name === kvKey)) {
+          console.log(`mg:${groupId}: own key missing from list, adding via closure`);
+          fileKeys = [{ name: kvKey }, ...fileKeys];
+        }
+
+        console.log(`mg:${groupId}: ${fileKeys.length} file key(s) to process`);
+
+        if (fileKeys.length === 0) {
+          console.log(`mg:${groupId}: no files found, aborting`);
+          return;
+        }
+
+        const fileDataList = await Promise.all(
+          fileKeys.map((k) => env.IMGUR_BOT_MEDIA_GROUPS.get(k.name, { type: "json" }))
+        );
+        const files = fileDataList.filter(Boolean);
+        console.log(`mg:${groupId}: ${files.length} file record(s) fetched`);
+
+        if (files.length === 0) {
+          console.log(`mg:${groupId}: all gets returned null, aborting`);
+          return;
+        }
+
+        const statusMsg = await sendMessage(chatId, "⬆️ Uploading...", env);
+
+        // Upload each file, collect { id, deletehash }
+        const uploaded = [];
+        for (const f of files) {
+          try {
+            const result = await mirrorToImgurRaw(f.fileId, env);
+            uploaded.push(result);
+            console.log(`mg:${groupId}: uploaded ${f.fileId} → ${result.id}`);
+          } catch (err) {
+            console.error(`mg:${groupId}: upload failed for ${f.fileId}:`, err.message);
+          }
+        }
+
+        if (uploaded.length === 0) {
+          await editMessageText(chatId, statusMsg.message_id, "❌ Failed to upload any images.", env, null, "HTML");
+          return;
+        }
+
+        // Only one image — treat as single upload
+        if (uploaded.length === 1) {
+          const { id, deletehash } = uploaded[0];
+          const imgurUrl = `https://imgur.com/${id}`;
+          await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
+            inline_keyboard: [
+              [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
+              [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+              [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
+            ],
+          });
+          return;
+        }
+
+        // Create an album from all uploaded images
+        try {
+          const deletehashes = uploaded.map((r) => r.deletehash);
+          const album = await createImgurAlbum(deletehashes, env);
+          const albumUrl = `https://imgur.com/a/${album.id}`;
+          console.log(`mg:${groupId}: album created → ${album.id}`);
+          await editMessageText(chatId, statusMsg.message_id, albumUrl, env, {
+            inline_keyboard: [
+              [{ text: "Copy Link", copy_text: { text: albumUrl } }],
+              [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(albumUrl)}` }],
+              [{ text: "🗑️ Delete", callback_data: `delete:${album.deletehash}` }],
+            ],
+          });
+        } catch (err) {
+          console.error(`mg:${groupId}: createImgurAlbum error:`, err.message);
+          // Fallback: post individual links
+          const links = uploaded.map((r) => `https://imgur.com/${r.id}`).join("\n");
+          await editMessageText(chatId, statusMsg.message_id, links, env);
+        }
+      } finally {
+        // Clean up all KV keys for this group
+        const toDelete = await env.IMGUR_BOT_MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
+        await Promise.all(toDelete.keys.map((k) => env.IMGUR_BOT_MEDIA_GROUPS.delete(k.name)));
+        console.log(`mg:${groupId}: cleaned up ${toDelete.keys.length} key(s)`);
       }
-    } finally {
-      // Clean up all KV keys for this group
-      const toDelete = await env.IMGUR_BOT_MEDIA_GROUPS.list({ prefix: `mg:${groupId}:` });
-      await Promise.all(toDelete.keys.map((k) => env.IMGUR_BOT_MEDIA_GROUPS.delete(k.name)));
+    } catch (err) {
+      console.error(`mg:${groupId}: deferred crashed:`, err.message, err.stack);
     }
   })());
 }
