@@ -197,14 +197,17 @@ async function handleMediaGroup(message, media, env, deferreds) {
 
       const lockKey = `mg:${groupId}:_lock`;
 
-      // First deferred to write the lock wins; others exit early.
-      const existingLock = await env.IMGUR_BOT_MEDIA_GROUPS.get(lockKey);
-      if (existingLock) {
-        console.log(`mg:${groupId}: lock already held, exiting`);
+      // Write-then-verify lock: every deferred writes its own UUID (last-writer-wins),
+      // waits 500ms for KV to settle on one value, then reads back.
+      // Only the deferred whose UUID survived the race proceeds.
+      const myLockId = crypto.randomUUID();
+      await env.IMGUR_BOT_MEDIA_GROUPS.put(lockKey, myLockId, { expirationTtl: 60 });
+      await new Promise((r) => setTimeout(r, 500));
+      const lockWinner = await env.IMGUR_BOT_MEDIA_GROUPS.get(lockKey);
+      if (lockWinner !== myLockId) {
+        console.log(`mg:${groupId}: lost lock, exiting`);
         return;
       }
-
-      await env.IMGUR_BOT_MEDIA_GROUPS.put(lockKey, "1", { expirationTtl: 60 });
       console.log(`mg:${groupId}: won lock`);
 
       try {
