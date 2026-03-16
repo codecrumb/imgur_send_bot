@@ -100,7 +100,7 @@ async function processUpdate(update, env) {
     ]);
     if (result instanceof Error) {
       console.error("mirrorUrlToImgur error:", result);
-      await editMessageText(chatId, statusMsg.message_id, `Error uploading: ${result.message}`, env);
+      await editMessageText(chatId, statusMsg.message_id, `❌ ${formatUploadError(result)}`, env, null, "HTML");
     } else {
       const { url: imgurUrl, deletehash } = result;
       await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
@@ -134,7 +134,7 @@ async function processUpdate(update, env) {
   ]);
   if (result instanceof Error) {
     console.error("mirrorToImgur error:", result);
-    await editMessageText(chatId, statusMsg.message_id, `Error uploading: ${result.message}`, env);
+    await editMessageText(chatId, statusMsg.message_id, `❌ ${formatUploadError(result)}`, env, null, "HTML");
   } else {
     const { url: imgurUrl, deletehash } = result;
     await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
@@ -314,9 +314,10 @@ async function sendMessage(chatId, text, env, replyMarkup) {
   return data.result;
 }
 
-async function editMessageText(chatId, messageId, text, env, replyMarkup) {
+async function editMessageText(chatId, messageId, text, env, replyMarkup, parseMode) {
   const body = { chat_id: chatId, message_id: messageId, text };
   if (replyMarkup) body.reply_markup = replyMarkup;
+  if (parseMode) body.parse_mode = parseMode;
   await fetch(telegramApi("editMessageText", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -368,8 +369,33 @@ function shuffled(arr) {
 
 /**
  * Downloads the Telegram file, then tries each Imgur Client ID (in random
- * order) until one succeeds.  Falls back to the next key on 429.
+ * order) until one succeeds.  Falls back to the next key on 429/5xx.
  */
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function formatUploadError(err) {
+  const friendly = escapeHtml(err.message);
+  if (!err.details) return friendly;
+  return `${friendly} <tg-spoiler>${escapeHtml(err.details)}</tg-spoiler>`;
+}
+
+// Transient errors worth retrying with a different key.
+function isTransient(status) {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+// Human-friendly upload error shown to the user.
+function uploadErrorMessage(status, imgurError) {
+  if (imgurError) return imgurError;
+  if (status === 429) return "Imgur is rate-limiting us right now. Try again in a moment.";
+  if (status === 413) return "File too large for Imgur (max 20 MB).";
+  if (status >= 500) return "Imgur is having issues right now. Try again in a moment.";
+  return `Upload failed (${status}). Please try again.`;
+}
+
 async function mirrorToImgur(fileId, env) {
   const fileBytes = await downloadTelegramFile(fileId, env);
   const clientIds = shuffled(getClientIds(env));
@@ -387,19 +413,19 @@ async function mirrorToImgur(fileId, env) {
     const remaining = imgurRes.headers.get("X-RateLimit-ClientRemaining");
     console.log(`Imgur key …${clientId.slice(-6)}: status=${imgurRes.status} remaining=${remaining ?? "?"}`);
 
-    if (imgurRes.status === 429) {
-      lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
+    if (isTransient(imgurRes.status)) {
+      lastError = new Error(uploadErrorMessage(imgurRes.status));
       continue; // try next key
     }
 
-    if (!imgurRes.ok) {
-      const errText = await imgurRes.text().catch(() => imgurRes.statusText);
-      throw new Error(`Imgur upload failed (${imgurRes.status}): ${errText}`);
-    }
+    const rawBody = await imgurRes.text().catch(() => "");
+    const imgurData = rawBody ? JSON.parse(rawBody) : null;
+    const imgurError = imgurData?.data?.error;
 
-    const imgurData = await imgurRes.json();
-    if (!imgurData.success) {
-      throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
+    if (!imgurRes.ok || !imgurData?.success) {
+      const err = new Error(uploadErrorMessage(imgurRes.status, imgurError));
+      err.details = rawBody;
+      throw err;
     }
 
     return {
@@ -429,19 +455,19 @@ async function mirrorUrlToImgur(imageUrl, env) {
     const remaining = imgurRes.headers.get("X-RateLimit-ClientRemaining");
     console.log(`Imgur key …${clientId.slice(-6)}: status=${imgurRes.status} remaining=${remaining ?? "?"}`);
 
-    if (imgurRes.status === 429) {
-      lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
+    if (isTransient(imgurRes.status)) {
+      lastError = new Error(uploadErrorMessage(imgurRes.status));
       continue;
     }
 
-    if (!imgurRes.ok) {
-      const errText = await imgurRes.text().catch(() => imgurRes.statusText);
-      throw new Error(`Imgur upload failed (${imgurRes.status}): ${errText}`);
-    }
+    const rawBody = await imgurRes.text().catch(() => "");
+    const imgurData = rawBody ? JSON.parse(rawBody) : null;
+    const imgurError = imgurData?.data?.error;
 
-    const imgurData = await imgurRes.json();
-    if (!imgurData.success) {
-      throw new Error(`Imgur API error: ${JSON.stringify(imgurData)}`);
+    if (!imgurRes.ok || !imgurData?.success) {
+      const err = new Error(uploadErrorMessage(imgurRes.status, imgurError));
+      err.details = rawBody;
+      throw err;
     }
 
     return {
@@ -463,14 +489,13 @@ async function deleteFromImgur(deletehash, env) {
       headers: { Authorization: `Client-ID ${clientId}` },
     });
 
-    if (res.status === 429) {
-      lastError = new Error(`Client-ID …${clientId.slice(-6)} is rate-limited (0 remaining)`);
+    if (isTransient(res.status)) {
+      lastError = new Error(`Delete failed (${res.status}), retrying...`);
       continue;
     }
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => res.statusText);
-      throw new Error(`Imgur delete failed (${res.status}): ${errText}`);
+      throw new Error("Couldn't delete the image. Try again later.");
     }
 
     return;
