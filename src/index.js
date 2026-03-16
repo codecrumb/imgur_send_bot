@@ -277,7 +277,9 @@ async function handleMediaGroup(message, media, env) {
   const groupId = message.media_group_id;
   const chatId = message.chat.id;
 
+  console.log(`[album] handleMediaGroup groupId=${groupId} KV_bound=${!!env.MEDIA_GROUPS}`);
   let group = await kvGetGroup(groupId, env);
+  console.log(`[album] initial KV read: ${group ? "found" : "null"}`);
 
   if (!group) {
     // First item: send status message and init KV entry
@@ -300,9 +302,12 @@ async function handleMediaGroup(message, media, env) {
   // Start deferred processing and return the promise.
   // The caller (handleWebhook) registers it with ctx.waitUntil before responding.
   return (async () => {
+    console.log(`[album] deferred started for group ${groupId}`);
     await new Promise((r) => setTimeout(r, 2000));
+    console.log(`[album] 2s elapsed, reading KV for group ${groupId}`);
 
     const latest = await kvGetGroup(groupId, env);
+    console.log(`[album] KV read result: ${latest ? JSON.stringify(latest) : "null"}`);
     if (!latest || latest.processed) return;
 
     latest.processed = true;
