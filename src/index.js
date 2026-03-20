@@ -913,23 +913,51 @@ async function mirrorToImgbb(fileBytes, env) {
 // ---------------------------------------------------------------------------
 
 async function mirrorToCatbox(fileBytes, filename) {
-  const form = new FormData();
-  form.append("reqtype", "fileupload");
-  form.append("fileToUpload", new Blob([fileBytes]), filename);
+  // Catbox sits behind Cloudflare; CF Worker → CF-protected site can be flaky.
+  // Retry up to 3 times with linear backoff on transient errors.
+  const CATBOX_TRANSIENT = new Set([520, 521, 522, 523, 524, 525, 526]);
+  const MAX_ATTEMPTS = 3;
+  let lastError;
 
-  const res = await fetch("https://catbox.moe/user/api.php", {
-    method: "POST",
-    body: form,
-  });
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+    }
 
-  if (!res.ok) {
-    throw new Error(`Catbox upload failed (${res.status}).`);
+    let res;
+    try {
+      const form = new FormData();
+      form.append("reqtype", "fileupload");
+      form.append("fileToUpload", new Blob([fileBytes]), filename);
+      res = await fetch("https://catbox.moe/user/api.php", {
+        method: "POST",
+        body: form,
+      });
+    } catch (err) {
+      // Network-level failure (connection dropped, DNS, etc.)
+      console.log(`Catbox attempt ${attempt + 1} network error: ${err.message}`);
+      lastError = new Error(`Catbox network error: ${err.message}`);
+      continue;
+    }
+
+    console.log(`Catbox attempt ${attempt + 1}: status=${res.status}`);
+
+    if (CATBOX_TRANSIENT.has(res.status)) {
+      lastError = new Error(`Catbox upload failed (${res.status}). Try again in a moment.`);
+      continue;
+    }
+
+    if (!res.ok) {
+      throw new Error(`Catbox upload failed (${res.status}).`);
+    }
+
+    const url = (await res.text()).trim();
+    if (!url.startsWith("https://")) {
+      throw new Error(`Catbox returned unexpected response: ${url}`);
+    }
+
+    return { url };
   }
 
-  const url = (await res.text()).trim();
-  if (!url.startsWith("https://")) {
-    throw new Error(`Catbox returned unexpected response: ${url}`);
-  }
-
-  return { url };
+  throw lastError ?? new Error("Catbox upload failed after retries.");
 }
