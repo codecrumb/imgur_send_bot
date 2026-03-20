@@ -178,7 +178,6 @@ async function processUpdate(update, env, deferreds) {
         inline_keyboard: [
           [{ text: "Copy Link", copy_text: { text: result.url } }],
           [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
-          [{ text: "🗑️ Delete", callback_data: `delete:imgbb:${result.id}` }],
         ],
       };
     } else {
@@ -352,27 +351,6 @@ async function handleCallbackQuery(query, env) {
     return;
   }
 
-  // Step 1: first tap on ImgBB delete — ask for confirmation
-  if (data.startsWith("delete:imgbb:")) {
-    const id = data.slice("delete:imgbb:".length);
-    await Promise.all([
-      editMessageText(
-        message.chat.id,
-        message.message_id,
-        "Are you sure you want to delete this image?",
-        env,
-        {
-          inline_keyboard: [
-            [{ text: "✅ Yes, delete", callback_data: `confirm:imgbb:${id}` }],
-            [{ text: "↩️ Cancel", callback_data: `cancel:imgbb:${id}` }],
-          ],
-        }
-      ),
-      answerCallbackQuery(queryId, env),
-    ]);
-    return;
-  }
-
   // Step 1: first tap on delete — ask for confirmation
   if (data.startsWith("delete:")) {
     const deletehash = data.slice("delete:".length);
@@ -402,20 +380,6 @@ async function handleCallbackQuery(query, env) {
   // Step 2a: confirmed — delete and mark as deleted
   if (data.startsWith("confirm:")) {
     const rest = data.slice("confirm:".length);
-
-    if (rest.startsWith("imgbb:")) {
-      const id = rest.slice("imgbb:".length);
-      try {
-        await deleteFromImgbb(id, env);
-      } catch (err) {
-        console.error("imgbb delete error:", err);
-      }
-      await Promise.all([
-        editMessageText(message.chat.id, message.message_id, "Deleted ✅", env),
-        answerCallbackQuery(queryId, env),
-      ]);
-      return;
-    }
 
     let deletehash;
     let isAlbum = false;
@@ -449,22 +413,6 @@ async function handleCallbackQuery(query, env) {
   // Step 2b: cancelled — restore original message
   if (data.startsWith("cancel:")) {
     const rest = data.slice("cancel:".length);
-
-    if (rest.startsWith("imgbb:")) {
-      const id = rest.slice("imgbb:".length);
-      const imgbbUrl = `https://ibb.co/${id}`;
-      await Promise.all([
-        editMessageText(message.chat.id, message.message_id, imgbbUrl, env, {
-          inline_keyboard: [
-            [{ text: "Copy Link", copy_text: { text: imgbbUrl } }],
-            [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgbbUrl)}` }],
-            [{ text: "🗑️ Delete", callback_data: `delete:imgbb:${id}` }],
-          ],
-        }),
-        answerCallbackQuery(queryId, env),
-      ]);
-      return;
-    }
 
     let imgurUrl, deletehash;
 
@@ -952,35 +900,8 @@ async function mirrorToImgbb(fileBytes, env) {
       throw err;
     }
 
-    return { url: `https://ibb.co/${data.data.id}`, id: data.data.id };
-  }
-
-  throw lastError ?? new Error("All ImgBB API keys exhausted");
-}
-
-// ---------------------------------------------------------------------------
-// ImgBB delete
-// ---------------------------------------------------------------------------
-
-async function deleteFromImgbb(id, env) {
-  const keys = shuffled(getImgbbKeys(env));
-
-  let lastError;
-  for (const key of keys) {
-    const res = await fetch(`https://api.imgbb.com/1/delete/${id}?key=${key}`, {
-      method: "POST",
-    });
-
-    if (isTransient(res.status)) {
-      lastError = new Error(`ImgBB delete failed (${res.status}), retrying...`);
-      continue;
-    }
-
-    if (!res.ok) {
-      throw new Error("Couldn't delete the image from ImgBB. Try again later.");
-    }
-
-    return;
+    // data.data.url is the direct image link (https://i.ibb.co/{hash}/filename.ext)
+    return { url: data.data.url, id: data.data.id };
   }
 
   throw lastError ?? new Error("All ImgBB API keys exhausted");
