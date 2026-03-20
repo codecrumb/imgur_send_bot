@@ -8,6 +8,9 @@
  *                         e.g. "abc123,def456,ghi789"
  *                         Requests are spread randomly across all keys;
  *                         if one is rate-limited (429) the next is tried.
+ *   IMGBB_API_KEYS      — comma-separated list of ImgBB API keys (optional)
+ *                         e.g. "key1,key2,key3"
+ *                         Used when caption contains /imgbb.
  *   BOT_USERNAME        — (optional) bot's Telegram username without @
  *                         e.g. "imgur_send_bot"
  *                         When set, the bot only responds in groups when
@@ -78,7 +81,7 @@ async function processUpdate(update, env, deferreds) {
       : ``;
     await sendMessage(
       chatId,
-      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${extra}\n\nSupported: JPG, PNG, GIF, MP4, WebM, MOV (up to 20 MB)`,
+      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${extra}\n\nAdd /imgbb or /catbox to your caption to choose a service.\n\nSupported: JPG, PNG, GIF, MP4, WebM, MOV (up to 20 MB)`,
       env
     );
     return;
@@ -91,7 +94,7 @@ async function processUpdate(update, env, deferreds) {
       : message.from?.first_name || "there";
     await sendMessage(
       chatId,
-      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it to Imgur.\nYou'll get a shareable link instantly.\n\nSupported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
+      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it.\nYou'll get a shareable link instantly.\n\nAdd /imgbb or /catbox to your caption to choose a service.\nVideos over 60s are automatically uploaded to Catbox.\n\nSupported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
       env
     );
     return;
@@ -126,7 +129,7 @@ async function processUpdate(update, env, deferreds) {
   if (unsupportedType) {
     await sendMessage(
       chatId,
-      `❌ ${unsupportedType} isn't supported by Imgur. Supported formats: JPG, PNG, GIF, MP4, WebM, MOV.`,
+      `❌ ${unsupportedType} isn't supported. Supported formats: JPG, PNG, GIF, MP4, WebM, MOV.`,
       env
     );
     return;
@@ -153,22 +156,41 @@ async function processUpdate(update, env, deferreds) {
     return;
   }
 
+  const service = getServiceForMessage(message);
   const [result, statusMsg] = await Promise.all([
-    mirrorToImgur(media.file_id, env).catch((err) => err),
+    uploadToService(service, media.file_id, message, env).catch((err) => err),
     sendMessage(chatId, "⬆️ Uploading...", env),
   ]);
   if (result instanceof Error) {
-    console.error("mirrorToImgur error:", result);
+    console.error("upload error:", result);
     await editMessageText(chatId, statusMsg.message_id, `❌ ${formatUploadError(result)}`, env, null, "HTML");
   } else {
-    const { url: imgurUrl, deletehash } = result;
-    await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
-      inline_keyboard: [
-        [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
-        [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-        [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
-      ],
-    });
+    let keyboard;
+    if (result.service === "catbox") {
+      keyboard = {
+        inline_keyboard: [
+          [{ text: "Copy Link", copy_text: { text: result.url } }],
+          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+        ],
+      };
+    } else if (result.service === "imgbb") {
+      keyboard = {
+        inline_keyboard: [
+          [{ text: "Copy Link", copy_text: { text: result.url } }],
+          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+          [{ text: "🗑️ Delete", callback_data: `delete:imgbb:${result.id}` }],
+        ],
+      };
+    } else {
+      keyboard = {
+        inline_keyboard: [
+          [{ text: "Copy Link", copy_text: { text: result.url } }],
+          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+          [{ text: "🗑️ Delete", callback_data: `delete:${result.deletehash}` }],
+        ],
+      };
+    }
+    await editMessageText(chatId, statusMsg.message_id, result.url, env, keyboard);
   }
 }
 
@@ -330,6 +352,27 @@ async function handleCallbackQuery(query, env) {
     return;
   }
 
+  // Step 1: first tap on ImgBB delete — ask for confirmation
+  if (data.startsWith("delete:imgbb:")) {
+    const id = data.slice("delete:imgbb:".length);
+    await Promise.all([
+      editMessageText(
+        message.chat.id,
+        message.message_id,
+        "Are you sure you want to delete this image?",
+        env,
+        {
+          inline_keyboard: [
+            [{ text: "✅ Yes, delete", callback_data: `confirm:imgbb:${id}` }],
+            [{ text: "↩️ Cancel", callback_data: `cancel:imgbb:${id}` }],
+          ],
+        }
+      ),
+      answerCallbackQuery(queryId, env),
+    ]);
+    return;
+  }
+
   // Step 1: first tap on delete — ask for confirmation
   if (data.startsWith("delete:")) {
     const deletehash = data.slice("delete:".length);
@@ -359,6 +402,21 @@ async function handleCallbackQuery(query, env) {
   // Step 2a: confirmed — delete and mark as deleted
   if (data.startsWith("confirm:")) {
     const rest = data.slice("confirm:".length);
+
+    if (rest.startsWith("imgbb:")) {
+      const id = rest.slice("imgbb:".length);
+      try {
+        await deleteFromImgbb(id, env);
+      } catch (err) {
+        console.error("imgbb delete error:", err);
+      }
+      await Promise.all([
+        editMessageText(message.chat.id, message.message_id, "Deleted ✅", env),
+        answerCallbackQuery(queryId, env),
+      ]);
+      return;
+    }
+
     let deletehash;
     let isAlbum = false;
 
@@ -391,6 +449,23 @@ async function handleCallbackQuery(query, env) {
   // Step 2b: cancelled — restore original message
   if (data.startsWith("cancel:")) {
     const rest = data.slice("cancel:".length);
+
+    if (rest.startsWith("imgbb:")) {
+      const id = rest.slice("imgbb:".length);
+      const imgbbUrl = `https://ibb.co/${id}`;
+      await Promise.all([
+        editMessageText(message.chat.id, message.message_id, imgbbUrl, env, {
+          inline_keyboard: [
+            [{ text: "Copy Link", copy_text: { text: imgbbUrl } }],
+            [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgbbUrl)}` }],
+            [{ text: "🗑️ Delete", callback_data: `delete:imgbb:${id}` }],
+          ],
+        }),
+        answerCallbackQuery(queryId, env),
+      ]);
+      return;
+    }
+
     let imgurUrl, deletehash;
 
     if (rest.startsWith("a:")) {
@@ -440,7 +515,7 @@ function isBotAddressed(message, env) {
   for (const e of entities) {
     if (e.type === "bot_command") {
       const cmd = text.slice(e.offset, e.offset + e.length).toLowerCase().split("@")[0];
-      if (cmd === "/upload") return true;
+      if (cmd === "/upload" || cmd === "/imgbb" || cmd === "/catbox" || cmd === "/imgur") return true;
     }
     if (e.type === "mention" && env.BOT_USERNAME) {
       const mentioned = text.slice(e.offset, e.offset + e.length);
@@ -521,15 +596,17 @@ async function downloadTelegramFile(fileId, env) {
     throw new Error(`getFile API error: ${JSON.stringify(info)}`);
   }
 
-  const fileUrl = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`;
+  const filePath = info.result.file_path;
+  const filename = filePath.split("/").pop() || "file";
+  const fileUrl = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`;
   const fileRes = await fetch(fileUrl);
   if (!fileRes.ok) {
     throw new Error(`File download failed: ${fileRes.status} ${fileRes.statusText}`);
   }
 
-  // Buffer the bytes so we can retry the Imgur upload with a different key
-  // if one is rate-limited.
-  return fileRes.arrayBuffer();
+  // Buffer the bytes so we can retry uploads with a different key if rate-limited.
+  const bytes = await fileRes.arrayBuffer();
+  return { bytes, filename };
 }
 
 async function sendMessage(chatId, text, env, replyMarkup) {
@@ -613,7 +690,7 @@ function uploadErrorMessage(status, imgurError) {
 
 // Uploads a Telegram file to Imgur, returns { id, deletehash }.
 async function mirrorToImgurRaw(fileId, env) {
-  const fileBytes = await downloadTelegramFile(fileId, env);
+  const { bytes: fileBytes } = await downloadTelegramFile(fileId, env);
   const clientIds = shuffled(getClientIds(env));
 
   let lastError;
@@ -783,4 +860,154 @@ async function deleteAlbumFromImgur(deletehash, env) {
   }
 
   throw lastError ?? new Error("All Imgur Client IDs exhausted");
+}
+
+// ---------------------------------------------------------------------------
+// Service routing
+// ---------------------------------------------------------------------------
+
+function getServiceForMessage(message) {
+  const entities = message.caption_entities || [];
+  const text = message.caption || "";
+  for (const e of entities) {
+    if (e.type === "bot_command") {
+      const cmd = text.slice(e.offset, e.offset + e.length).toLowerCase().split("@")[0];
+      if (cmd === "/imgbb") return "imgbb";
+      if (cmd === "/catbox") return "catbox";
+      if (cmd === "/imgur") return "imgur";
+    }
+  }
+  if (message.video && message.video.duration > 60) return "catbox";
+  return "imgur";
+}
+
+async function uploadToService(service, fileId, message, env) {
+  if (service === "imgbb") {
+    const { bytes, filename } = await downloadTelegramFile(fileId, env);
+    const { url, id } = await mirrorToImgbb(bytes, env);
+    return { url, id, service: "imgbb" };
+  }
+  if (service === "catbox") {
+    const { bytes, filename } = await downloadTelegramFile(fileId, env);
+    const { url } = await mirrorToCatbox(bytes, filename);
+    return { url, service: "catbox" };
+  }
+  // Default: imgur
+  const { url, deletehash } = await mirrorToImgur(fileId, env);
+  return { url, deletehash, service: "imgur" };
+}
+
+// ---------------------------------------------------------------------------
+// ImgBB key pool
+// ---------------------------------------------------------------------------
+
+function getImgbbKeys(env) {
+  const raw = env.IMGBB_API_KEYS || "";
+  const keys = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (keys.length === 0) {
+    throw new Error("No ImgBB API keys configured. Set IMGBB_API_KEYS.");
+  }
+  return keys;
+}
+
+// ---------------------------------------------------------------------------
+// ImgBB upload
+// ---------------------------------------------------------------------------
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function mirrorToImgbb(fileBytes, env) {
+  const keys = shuffled(getImgbbKeys(env));
+  const b64 = arrayBufferToBase64(fileBytes);
+
+  let lastError;
+  for (const key of keys) {
+    const form = new FormData();
+    form.append("image", b64);
+    const res = await fetch(`https://api.imgbb.com/1/upload?key=${key}`, {
+      method: "POST",
+      body: form,
+    });
+
+    console.log(`ImgBB key …${key.slice(-6)}: status=${res.status}`);
+
+    if (isTransient(res.status)) {
+      lastError = new Error("ImgBB is rate-limiting us right now. Try again in a moment.");
+      continue;
+    }
+
+    const rawBody = await res.text().catch(() => "");
+    const data = rawBody ? JSON.parse(rawBody) : null;
+
+    if (!res.ok || !data?.success) {
+      const err = new Error(`ImgBB upload failed (${res.status}).`);
+      err.details = rawBody;
+      throw err;
+    }
+
+    return { url: `https://ibb.co/${data.data.id}`, id: data.data.id };
+  }
+
+  throw lastError ?? new Error("All ImgBB API keys exhausted");
+}
+
+// ---------------------------------------------------------------------------
+// ImgBB delete
+// ---------------------------------------------------------------------------
+
+async function deleteFromImgbb(id, env) {
+  const keys = shuffled(getImgbbKeys(env));
+
+  let lastError;
+  for (const key of keys) {
+    const res = await fetch(`https://api.imgbb.com/1/delete/${id}?key=${key}`, {
+      method: "POST",
+    });
+
+    if (isTransient(res.status)) {
+      lastError = new Error(`ImgBB delete failed (${res.status}), retrying...`);
+      continue;
+    }
+
+    if (!res.ok) {
+      throw new Error("Couldn't delete the image from ImgBB. Try again later.");
+    }
+
+    return;
+  }
+
+  throw lastError ?? new Error("All ImgBB API keys exhausted");
+}
+
+// ---------------------------------------------------------------------------
+// Catbox upload
+// ---------------------------------------------------------------------------
+
+async function mirrorToCatbox(fileBytes, filename) {
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("fileToUpload", new Blob([fileBytes]), filename);
+
+  const res = await fetch("https://catbox.moe/user/api.php", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Catbox upload failed (${res.status}).`);
+  }
+
+  const url = (await res.text()).trim();
+  if (!url.startsWith("https://")) {
+    throw new Error(`Catbox returned unexpected response: ${url}`);
+  }
+
+  return { url };
 }
