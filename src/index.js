@@ -178,6 +178,7 @@ async function processUpdate(update, env, deferreds) {
         inline_keyboard: [
           [{ text: "Copy Link", copy_text: { text: result.url } }],
           [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+          [{ text: "🗑️ Delete", url: result.deleteUrl }],
         ],
       };
     } else {
@@ -832,8 +833,8 @@ function getServiceForMessage(message) {
 async function uploadToService(service, fileId, message, env) {
   if (service === "imgbb") {
     const { bytes, filename } = await downloadTelegramFile(fileId, env);
-    const { url, id } = await mirrorToImgbb(bytes, env);
-    return { url, id, service: "imgbb" };
+    const { url, id, deleteUrl } = await mirrorToImgbb(bytes, env);
+    return { url, id, deleteUrl, service: "imgbb" };
   }
   if (service === "catbox") {
     const { bytes, filename } = await downloadTelegramFile(fileId, env);
@@ -901,7 +902,7 @@ async function mirrorToImgbb(fileBytes, env) {
     }
 
     // data.data.url is the direct image link (https://i.ibb.co/{hash}/filename.ext)
-    return { url: data.data.url, id: data.data.id };
+    return { url: data.data.url, id: data.data.id, deleteUrl: data.data.delete_url };
   }
 
   throw lastError ?? new Error("All ImgBB API keys exhausted");
