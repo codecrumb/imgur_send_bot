@@ -92,10 +92,42 @@ async function processUpdate(update, env, deferreds) {
     const username = message.from?.username
       ? `@${message.from.username}`
       : message.from?.first_name || "there";
+    const userId = message.from?.id;
+    const currentService = await getUserService(userId, env);
+    const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
     await sendMessage(
       chatId,
-      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it.\nYou'll get a shareable link instantly.\n\nAdd /imgbb or /catbox to your caption to choose a service.\nVideos over 60s are automatically uploaded to Catbox.\n\nSupported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
-      env
+      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it.\nYou'll get a shareable link instantly.\n\nYour default upload service is currently: ${serviceLabel}\nChange it below, or override per-upload with /imgbb or /imgur in your caption.\n\nSupported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
+      env,
+      {
+        inline_keyboard: [
+          [
+            { text: `${currentService === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
+            { text: `${currentService === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
+          ],
+        ],
+      }
+    );
+    return;
+  }
+
+  // Handle /settings command
+  if (message.text && message.text.toLowerCase().split("@")[0] === "/settings") {
+    const userId = message.from?.id;
+    const currentService = await getUserService(userId, env);
+    const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
+    await sendMessage(
+      chatId,
+      `⚙️ Settings\n\nDefault upload service: ${serviceLabel}\n\nChoose your default:`,
+      env,
+      {
+        inline_keyboard: [
+          [
+            { text: `${currentService === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
+            { text: `${currentService === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
+          ],
+        ],
+      }
     );
     return;
   }
@@ -156,7 +188,7 @@ async function processUpdate(update, env, deferreds) {
     return;
   }
 
-  const service = getServiceForMessage(message);
+  const service = await getServiceForMessage(message, env);
   const [result, statusMsg] = await Promise.all([
     uploadToService(service, media.file_id, message, env).catch((err) => err),
     sendMessage(chatId, "⬆️ Uploading...", env),
@@ -447,6 +479,36 @@ async function handleCallbackQuery(query, env) {
     return;
   }
 
+  // Set default upload service
+  if (data.startsWith("set_service:")) {
+    const service = data.slice("set_service:".length);
+    const userId = query.from?.id;
+    if (userId && (service === "imgur" || service === "imgbb")) {
+      await setUserService(userId, service, env);
+      const serviceLabel = service === "imgbb" ? "ImgBB" : "Imgur";
+      await Promise.all([
+        editMessageText(
+          message.chat.id,
+          message.message_id,
+          message.text,
+          env,
+          {
+            inline_keyboard: [
+              [
+                { text: `${service === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
+                { text: `${service === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
+              ],
+            ],
+          }
+        ),
+        answerCallbackQuery(queryId, env, `Default set to ${serviceLabel}`),
+      ]);
+    } else {
+      await answerCallbackQuery(queryId, env);
+    }
+    return;
+  }
+
   await answerCallbackQuery(queryId, env);
 }
 
@@ -464,7 +526,7 @@ function isBotAddressed(message, env) {
   for (const e of entities) {
     if (e.type === "bot_command") {
       const cmd = text.slice(e.offset, e.offset + e.length).toLowerCase().split("@")[0];
-      if (cmd === "/upload" || cmd === "/imgbb" || cmd === "/catbox" || cmd === "/imgur") return true;
+      if (cmd === "/upload" || cmd === "/imgbb" || cmd === "/catbox" || cmd === "/imgur" || cmd === "/settings") return true;
     }
     if (e.type === "mention" && env.BOT_USERNAME) {
       const mentioned = text.slice(e.offset, e.offset + e.length);
@@ -581,11 +643,13 @@ async function editMessageText(chatId, messageId, text, env, replyMarkup, parseM
   });
 }
 
-async function answerCallbackQuery(callbackQueryId, env) {
+async function answerCallbackQuery(callbackQueryId, env, text) {
+  const body = { callback_query_id: callbackQueryId };
+  if (text) body.text = text;
   await fetch(telegramApi("answerCallbackQuery", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -815,7 +879,7 @@ async function deleteAlbumFromImgur(deletehash, env) {
 // Service routing
 // ---------------------------------------------------------------------------
 
-function getServiceForMessage(message) {
+async function getServiceForMessage(message, env) {
   const entities = message.caption_entities || [];
   const text = message.caption || "";
   for (const e of entities) {
@@ -827,7 +891,8 @@ function getServiceForMessage(message) {
     }
   }
   if (message.video && message.video.duration > 60) return "catbox";
-  return "imgur";
+  // Fall back to the user's saved preference
+  return getUserService(message.from?.id, env);
 }
 
 async function uploadToService(service, fileId, message, env) {
@@ -960,4 +1025,33 @@ async function mirrorToCatbox(fileBytes, filename) {
   }
 
   throw lastError ?? new Error("Catbox upload failed after retries.");
+}
+
+// ---------------------------------------------------------------------------
+// D1 user preferences
+// Schema (run once via `wrangler d1 execute media-upload-bot-users --command`):
+//   CREATE TABLE IF NOT EXISTS user_prefs (
+//     user_id INTEGER PRIMARY KEY,
+//     default_service TEXT NOT NULL DEFAULT 'imgur'
+//   );
+// ---------------------------------------------------------------------------
+
+async function getUserService(userId, env) {
+  if (!env.USER_PREFS_DB || !userId) return "imgur";
+  try {
+    const row = await env.USER_PREFS_DB.prepare(
+      "SELECT default_service FROM user_prefs WHERE user_id = ?"
+    ).bind(userId).first();
+    return row?.default_service ?? "imgur";
+  } catch {
+    return "imgur";
+  }
+}
+
+async function setUserService(userId, service, env) {
+  if (!env.USER_PREFS_DB || !userId) return;
+  await env.USER_PREFS_DB.prepare(
+    "INSERT INTO user_prefs (user_id, default_service) VALUES (?, ?)" +
+    " ON CONFLICT(user_id) DO UPDATE SET default_service = excluded.default_service"
+  ).bind(userId, service).run();
 }

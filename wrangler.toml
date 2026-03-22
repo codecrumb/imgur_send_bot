@@ -1,6 +1,7 @@
 name = "imgursendbot"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
+account_id = "19113d327ef2f9d716030f95f19fb45b"
 
 [observability]
 enabled = false
@@ -29,3 +30,8 @@ head_sampling_rate = 1
 [[kv_namespaces]]
 binding = "IMGUR_BOT_MEDIA_GROUPS"
 id = "bf5d70b9337a40598d80e7d13f94c742"
+
+[[d1_databases]]
+binding = "USER_PREFS_DB"
+database_name = "media-upload-bot-users"
+database_id = "82edb3f2-5282-47d4-b228-64440cb44b84"
