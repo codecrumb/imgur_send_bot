@@ -135,13 +135,25 @@ async function processUpdate(update, env, deferreds) {
   // Handle plain URL messages (e.g. https://example.com/photo.jpg)
   const imageUrl = getMediaUrl(message);
   if (imageUrl) {
+    const urlService = await getUserService(message.from?.id, env);
+    const uploadPromise = urlService === "imgbb"
+      ? mirrorUrlToImgbb(imageUrl, env).catch((err) => err)
+      : mirrorUrlToImgur(imageUrl, env).catch((err) => err);
     const [result, statusMsg] = await Promise.all([
-      mirrorUrlToImgur(imageUrl, env).catch((err) => err),
+      uploadPromise,
       sendMessage(chatId, "⬆️ Uploading...", env),
     ]);
     if (result instanceof Error) {
-      console.error("mirrorUrlToImgur error:", result);
+      console.error("mirrorUrl error:", result);
       await editMessageText(chatId, statusMsg.message_id, `❌ ${formatUploadError(result)}`, env, null, "HTML");
+    } else if (result.service === "imgbb") {
+      const { url: imgbbUrl } = result;
+      await editMessageText(chatId, statusMsg.message_id, imgbbUrl, env, {
+        inline_keyboard: [
+          [{ text: "Copy Link", copy_text: { text: imgbbUrl } }],
+          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgbbUrl)}` }],
+        ],
+      });
     } else {
       const { url: imgurUrl, deletehash } = result;
       await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
@@ -783,6 +795,41 @@ async function mirrorUrlToImgur(imageUrl, env) {
   }
 
   throw lastError ?? new Error("All Imgur Client IDs exhausted");
+}
+
+// Uploads an image by URL directly to ImgBB — ImgBB fetches it server-side.
+async function mirrorUrlToImgbb(imageUrl, env) {
+  const keys = shuffled(getImgbbKeys(env));
+
+  let lastError;
+  for (const key of keys) {
+    const form = new FormData();
+    form.append("image", imageUrl);
+    const res = await fetch(`https://api.imgbb.com/1/upload?key=${key}`, {
+      method: "POST",
+      body: form,
+    });
+
+    console.log(`ImgBB key …${key.slice(-6)}: status=${res.status}`);
+
+    if (isTransient(res.status)) {
+      lastError = new Error("ImgBB is rate-limiting us right now. Try again in a moment.");
+      continue;
+    }
+
+    const rawBody = await res.text().catch(() => "");
+    const data = rawBody ? JSON.parse(rawBody) : null;
+
+    if (!res.ok || !data?.success) {
+      const err = new Error(`ImgBB upload failed (${res.status}).`);
+      err.details = rawBody;
+      throw err;
+    }
+
+    return { url: data.data.url, id: data.data.id, deleteUrl: data.data.delete_url, service: "imgbb" };
+  }
+
+  throw lastError ?? new Error("All ImgBB API keys exhausted");
 }
 
 // Creates an anonymous Imgur album from an array of deletehashes.
