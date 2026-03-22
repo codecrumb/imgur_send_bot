@@ -892,7 +892,11 @@ async function getServiceForMessage(message, env) {
   }
   if (message.video && message.video.duration > 60) return "catbox";
   // Fall back to the user's saved preference
-  return getUserService(message.from?.id, env);
+  const service = await getUserService(message.from?.id, env);
+  // ImgBB doesn't support videos — fall back to Imgur automatically
+  const isVideo = !!(message.video || message.animation || message.video_note);
+  if (service === "imgbb" && isVideo) return "imgur";
+  return service;
 }
 
 async function uploadToService(service, fileId, message, env) {
