@@ -210,7 +210,6 @@ async function processUpdate(update, env, deferreds) {
         inline_keyboard: [
           [{ text: "Copy Link", copy_text: { text: result.url } }],
           [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
-          [{ text: "🗑️ Delete", url: result.deleteUrl }],
         ],
       };
     } else {
