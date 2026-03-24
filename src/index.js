@@ -184,14 +184,35 @@ async function processUpdate(update, env, deferreds) {
     return;
   }
 
-  // Handle /start command — always show language picker first
+  // Handle /start command
   if (message.text && message.text.startsWith("/start")) {
-    await sendMessage(chatId, "🌐 Please choose your language:\nאנא בחר את השפה שלך:", env, {
-      inline_keyboard: [[
-        { text: "🇺🇸 English", callback_data: "start_lang:en" },
-        { text: "🇮🇱 עברית", callback_data: "start_lang:he" },
-      ]],
-    });
+    const newUser = await isNewUser(userId, env);
+    if (newUser) {
+      // First time — ask for language
+      await sendMessage(chatId, "🌐 Please choose your language:\nאנא בחר את השפה שלך:", env, {
+        inline_keyboard: [[
+          { text: "🇺🇸 English", callback_data: "start_lang:en" },
+          { text: "🇮🇱 עברית", callback_data: "start_lang:he" },
+        ]],
+      });
+    } else {
+      // Returning user — show welcome directly
+      const username = message.from?.username
+        ? `@${message.from.username}`
+        : message.from?.first_name || "there";
+      const text = [
+        tr(lang, "welcomeIntro", username),
+        "",
+        tr(lang, "welcomeBody"),
+        "",
+        tr(lang, "welcomeHint"),
+      ].join("\n");
+      await sendMessage(chatId, text, env, {
+        inline_keyboard: [[
+          { text: tr(lang, "settingsBtn"), callback_data: "open_settings" },
+        ]],
+      });
+    }
     return;
   }
 
@@ -1260,5 +1281,17 @@ async function setUserLanguage(userId, language, env) {
     ).bind(userId, language).run();
   } catch (err) {
     console.error("setUserLanguage error:", err);
+  }
+}
+
+async function isNewUser(userId, env) {
+  if (!env.USER_PREFS_DB || !userId) return true;
+  try {
+    const row = await env.USER_PREFS_DB.prepare(
+      "SELECT 1 FROM user_prefs WHERE user_id = ?"
+    ).bind(userId).first();
+    return !row;
+  } catch {
+    return true;
   }
 }
