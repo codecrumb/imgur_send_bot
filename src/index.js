@@ -20,6 +20,101 @@
  *   IMGUR_BOT_MEDIA_GROUPS — stores per-photo keys for multi-photo albums
  */
 
+// ---------------------------------------------------------------------------
+// Translations
+// ---------------------------------------------------------------------------
+
+const STRINGS = {
+  en: {
+    welcomeIntro:        (name) => `Hi ${name}! 👋`,
+    welcomeBody:         `Send me a photo, video, GIF, or image URL and I'll upload it.\nYou'll get a shareable link instantly.`,
+    currentService:      (label) => `Your default upload service is currently: ${label}`,
+    changeBelow:         `Change it below, or override per-upload with /imgbb or /imgur in your caption.`,
+    supportedFormats:    `Supported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs`,
+    maxSize:             `Max size: 20 MB\nUploads are anonymous.`,
+    settingsHeader:      `⚙️ Settings`,
+    defaultServiceLabel: (label) => `Default upload service: ${label}`,
+    chooseDefault:       `Choose your default:`,
+    uploadHelp:          (groupExtra) => `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${groupExtra}\n\nAdd /imgbb or /catbox to your caption to choose a service.\n\nSupported: JPG, PNG, GIF, MP4, WebM, MOV (up to 20 MB)`,
+    groupExtra:          (botname) => `\n• Tag @${botname} or use /upload along with your media`,
+    uploading:           `⬆️ Uploading...`,
+    deleted:             `Deleted ✅`,
+    failedUpload:        `❌ Failed to upload any images.`,
+    fileTooLarge:        (mb) => `File too large (${mb} MB). Telegram limits bot downloads to 20 MB — please compress it and send again.`,
+    unsupportedType:     (type) => `❌ ${type} isn't supported. Supported formats: JPG, PNG, GIF, MP4, WebM, MOV.`,
+    confirmDeleteImage:  `Are you sure you want to delete this image?`,
+    confirmDeleteAlbum:  `Are you sure you want to delete this album?`,
+    yesDelete:           `✅ Yes, delete`,
+    cancel:              `↩️ Cancel`,
+    copyLink:            `Copy Link`,
+    share:               `Share`,
+    deleteBtn:           `🗑️ Delete`,
+    defaultSetTo:        (label) => `Default set to ${label}`,
+    languageSaved:       `Language saved!`,
+    chooseLanguage:      `Please choose your language:`,
+    langEn:              `🇺🇸 English`,
+    langHe:              `🇮🇱 עברית`,
+  },
+  he: {
+    welcomeIntro:        (name) => `היי ${name}! 👋`,
+    welcomeBody:         `שלח לי תמונה, וידאו, GIF או כתובת URL של תמונה ואני אעלה אותה.\nתקבל קישור שניתן לשתף מיד.`,
+    currentService:      (label) => `שירות ההעלאה המוגדר כברירת מחדל שלך הוא: ${label}`,
+    changeBelow:         `שנה אותו למטה, או החלף עבור כל העלאה עם /imgbb או /imgur בכיתוב שלך.`,
+    supportedFormats:    `נתמך:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• כתובות URL ישירות של תמונה/וידאו`,
+    maxSize:             `גודל מקסימלי: 20 MB\nההעלאות הן אנונימיות.`,
+    settingsHeader:      `⚙️ הגדרות`,
+    defaultServiceLabel: (label) => `שירות העלאה ברירת מחדל: ${label}`,
+    chooseDefault:       `בחר את ברירת המחדל שלך:`,
+    uploadHelp:          (groupExtra) => `📸 להעלאה, שלח לי:\n\n• תמונה, GIF או וידאו (לחץ על 📎)\n• כתובת URL ישירה של תמונה/וידאו${groupExtra}\n\nהוסף /imgbb או /catbox לכיתוב שלך כדי לבחור שירות.\n\nנתמך: JPG, PNG, GIF, MP4, WebM, MOV (עד 20 MB)`,
+    groupExtra:          (botname) => `\n• תייג את @${botname} או השתמש ב-/upload יחד עם המדיה שלך`,
+    uploading:           `⬆️ מעלה...`,
+    deleted:             `נמחק ✅`,
+    failedUpload:        `❌ נכשל בהעלאת כל התמונות.`,
+    fileTooLarge:        (mb) => `הקובץ גדול מדי (${mb} MB). Telegram מגביל הורדות של בוטים ל-20 MB — אנא לחץ על הקובץ ושגר שוב.`,
+    unsupportedType:     (type) => `❌ ${type} אינו נתמך. פורמטים נתמכים: JPG, PNG, GIF, MP4, WebM, MOV.`,
+    confirmDeleteImage:  `אתה בטוח שברצונך למחוק תמונה זו?`,
+    confirmDeleteAlbum:  `אתה בטוח שברצונך למחוק את האלבום הזה?`,
+    yesDelete:           `✅ כן, מחק`,
+    cancel:              `↩️ ביטול`,
+    copyLink:            `העתק קישור`,
+    share:               `שתף`,
+    deleteBtn:           `🗑️ מחק`,
+    defaultSetTo:        (label) => `ברירת המחדל נקבעה ל-${label}`,
+    languageSaved:       `השפה נשמרה!`,
+    chooseLanguage:      `אנא בחר את השפה שלך:`,
+    langEn:              `🇺🇸 English`,
+    langHe:              `🇮🇱 עברית`,
+  },
+};
+
+// Translate a key, optionally calling it as a function with args.
+function tr(lang, key, ...args) {
+  const dict = STRINGS[lang] ?? STRINGS.en;
+  const val = dict[key] ?? STRINGS.en[key];
+  return typeof val === "function" ? val(...args) : val;
+}
+
+// Build the settings keyboard (language row + service row).
+function buildSettingsKeyboard(lang, currentService) {
+  return {
+    inline_keyboard: [
+      [
+        { text: tr(lang, "langEn"), callback_data: "set_lang:en" },
+        { text: tr(lang, "langHe"), callback_data: "set_lang:he" },
+      ],
+      [
+        { text: `${currentService === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
+        { text: `${currentService === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
+      ],
+    ],
+  };
+}
+
+// Build the settings message body.
+function buildSettingsText(lang, serviceLabel) {
+  return `${tr(lang, "settingsHeader")}\n\n${tr(lang, "defaultServiceLabel", serviceLabel)}\n\n${tr(lang, "chooseDefault")}`;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -69,21 +164,19 @@ async function processUpdate(update, env, deferreds) {
   if (!message) return;
 
   const chatId = message.chat.id;
+  const userId = message.from?.id;
 
   // In groups, only act when the bot is explicitly addressed
   if (isGroupChat(message) && !isBotAddressed(message, env)) return;
 
+  // Fetch user language once for all handlers below
+  const lang = await getUserLanguage(userId, env);
+
   // Handle /upload with no media — show usage instructions
   if (message.text && message.text.toLowerCase().split("@")[0] === "/upload") {
     const inGroup = isGroupChat(message);
-    const extra = inGroup
-      ? `\n• Tag @${env.BOT_USERNAME || "me"} or use /upload along with your media`
-      : ``;
-    await sendMessage(
-      chatId,
-      `📸 To upload, send me:\n\n• A photo, GIF, or video (tap 📎)\n• A direct image/video URL${extra}\n\nAdd /imgbb or /catbox to your caption to choose a service.\n\nSupported: JPG, PNG, GIF, MP4, WebM, MOV (up to 20 MB)`,
-      env
-    );
+    const extra = inGroup ? tr(lang, "groupExtra", env.BOT_USERNAME || "me") : "";
+    await sendMessage(chatId, tr(lang, "uploadHelp", extra), env);
     return;
   }
 
@@ -92,42 +185,33 @@ async function processUpdate(update, env, deferreds) {
     const username = message.from?.username
       ? `@${message.from.username}`
       : message.from?.first_name || "there";
-    const userId = message.from?.id;
     const currentService = await getUserService(userId, env);
     const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
-    await sendMessage(
-      chatId,
-      `Hi ${username}! 👋\n\nSend me a photo, video, GIF, or image URL and I'll upload it.\nYou'll get a shareable link instantly.\n\nYour default upload service is currently: ${serviceLabel}\nChange it below, or override per-upload with /imgbb or /imgur in your caption.\n\nSupported:\n• JPG, PNG, GIF\n• MP4, WebM, MOV\n• Direct image/video URLs\n\nMax size: 20 MB\nUploads are anonymous.`,
-      env,
-      {
-        inline_keyboard: [
-          [
-            { text: `${currentService === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
-            { text: `${currentService === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
-          ],
-        ],
-      }
-    );
+    const text = [
+      tr(lang, "welcomeIntro", username),
+      "",
+      tr(lang, "welcomeBody"),
+      "",
+      tr(lang, "currentService", serviceLabel),
+      tr(lang, "changeBelow"),
+      "",
+      tr(lang, "supportedFormats"),
+      "",
+      tr(lang, "maxSize"),
+    ].join("\n");
+    await sendMessage(chatId, text, env, buildSettingsKeyboard(lang, currentService));
     return;
   }
 
   // Handle /settings command
   if (message.text && message.text.toLowerCase().split("@")[0] === "/settings") {
-    const userId = message.from?.id;
     const currentService = await getUserService(userId, env);
     const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
     await sendMessage(
       chatId,
-      `⚙️ Settings\n\nDefault upload service: ${serviceLabel}\n\nChoose your default:`,
+      buildSettingsText(lang, serviceLabel),
       env,
-      {
-        inline_keyboard: [
-          [
-            { text: `${currentService === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
-            { text: `${currentService === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
-          ],
-        ],
-      }
+      buildSettingsKeyboard(lang, currentService)
     );
     return;
   }
@@ -135,13 +219,13 @@ async function processUpdate(update, env, deferreds) {
   // Handle plain URL messages (e.g. https://example.com/photo.jpg)
   const imageUrl = getMediaUrl(message);
   if (imageUrl) {
-    const urlService = await getUserService(message.from?.id, env);
+    const urlService = await getUserService(userId, env);
     const uploadPromise = urlService === "imgbb"
       ? mirrorUrlToImgbb(imageUrl, env).catch((err) => err)
       : mirrorUrlToImgur(imageUrl, env).catch((err) => err);
     const [result, statusMsg] = await Promise.all([
       uploadPromise,
-      sendMessage(chatId, "⬆️ Uploading...", env),
+      sendMessage(chatId, tr(lang, "uploading"), env),
     ]);
     if (result instanceof Error) {
       console.error("mirrorUrl error:", result);
@@ -150,17 +234,17 @@ async function processUpdate(update, env, deferreds) {
       const { url: imgbbUrl } = result;
       await editMessageText(chatId, statusMsg.message_id, imgbbUrl, env, {
         inline_keyboard: [
-          [{ text: "Copy Link", copy_text: { text: imgbbUrl } }],
-          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgbbUrl)}` }],
+          [{ text: tr(lang, "copyLink"), copy_text: { text: imgbbUrl } }],
+          [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(imgbbUrl)}` }],
         ],
       });
     } else {
       const { url: imgurUrl, deletehash } = result;
       await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
         inline_keyboard: [
-          [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
-          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-          [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
+          [{ text: tr(lang, "copyLink"), copy_text: { text: imgurUrl } }],
+          [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+          [{ text: tr(lang, "deleteBtn"), callback_data: `delete:${deletehash}` }],
         ],
       });
     }
@@ -171,11 +255,7 @@ async function processUpdate(update, env, deferreds) {
   // Only notify the user for standalone files — silently skip in albums.
   const unsupportedType = getUnsupportedDocumentType(message);
   if (unsupportedType) {
-    await sendMessage(
-      chatId,
-      `❌ ${unsupportedType} isn't supported. Supported formats: JPG, PNG, GIF, MP4, WebM, MOV.`,
-      env
-    );
+    await sendMessage(chatId, tr(lang, "unsupportedType", unsupportedType), env);
     return;
   }
 
@@ -184,7 +264,7 @@ async function processUpdate(update, env, deferreds) {
 
   // Multi-photo send — collect and create an album
   if (message.media_group_id) {
-    await handleMediaGroup(message, media, env, deferreds);
+    await handleMediaGroup(message, media, env, deferreds, lang);
     return;
   }
 
@@ -192,18 +272,14 @@ async function processUpdate(update, env, deferreds) {
   const MAX_BYTES = 20 * 1024 * 1024;
   if (media.file_size && media.file_size > MAX_BYTES) {
     const mb = (media.file_size / (1024 * 1024)).toFixed(1);
-    await sendMessage(
-      chatId,
-      `File too large (${mb} MB). Telegram limits bot downloads to 20 MB — please compress it and send again.`,
-      env
-    );
+    await sendMessage(chatId, tr(lang, "fileTooLarge", mb), env);
     return;
   }
 
   const service = await getServiceForMessage(message, env);
   const [result, statusMsg] = await Promise.all([
     uploadToService(service, media.file_id, message, env).catch((err) => err),
-    sendMessage(chatId, "⬆️ Uploading...", env),
+    sendMessage(chatId, tr(lang, "uploading"), env),
   ]);
   if (result instanceof Error) {
     console.error("upload error:", result);
@@ -213,23 +289,23 @@ async function processUpdate(update, env, deferreds) {
     if (result.service === "catbox") {
       keyboard = {
         inline_keyboard: [
-          [{ text: "Copy Link", copy_text: { text: result.url } }],
-          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+          [{ text: tr(lang, "copyLink"), copy_text: { text: result.url } }],
+          [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
         ],
       };
     } else if (result.service === "imgbb") {
       keyboard = {
         inline_keyboard: [
-          [{ text: "Copy Link", copy_text: { text: result.url } }],
-          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+          [{ text: tr(lang, "copyLink"), copy_text: { text: result.url } }],
+          [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
         ],
       };
     } else {
       keyboard = {
         inline_keyboard: [
-          [{ text: "Copy Link", copy_text: { text: result.url } }],
-          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
-          [{ text: "🗑️ Delete", callback_data: `delete:${result.deletehash}` }],
+          [{ text: tr(lang, "copyLink"), copy_text: { text: result.url } }],
+          [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(result.url)}` }],
+          [{ text: tr(lang, "deleteBtn"), callback_data: `delete:${result.deletehash}` }],
         ],
       };
     }
@@ -241,7 +317,7 @@ async function processUpdate(update, env, deferreds) {
 // Media group (album) handler
 // ---------------------------------------------------------------------------
 
-async function handleMediaGroup(message, media, env, deferreds) {
+async function handleMediaGroup(message, media, env, deferreds, lang = "en") {
   const groupId = message.media_group_id;
   const chatId = message.chat.id;
 
@@ -319,7 +395,7 @@ async function handleMediaGroup(message, media, env, deferreds) {
           return;
         }
 
-        const statusMsg = await sendMessage(chatId, "⬆️ Uploading...", env);
+        const statusMsg = await sendMessage(chatId, tr(lang, "uploading"), env);
 
         // Upload each file, collect { id, deletehash }
         const uploaded = [];
@@ -334,7 +410,7 @@ async function handleMediaGroup(message, media, env, deferreds) {
         }
 
         if (uploaded.length === 0) {
-          await editMessageText(chatId, statusMsg.message_id, "❌ Failed to upload any images.", env, null, "HTML");
+          await editMessageText(chatId, statusMsg.message_id, tr(lang, "failedUpload"), env, null, "HTML");
           return;
         }
 
@@ -344,9 +420,9 @@ async function handleMediaGroup(message, media, env, deferreds) {
           const imgurUrl = `https://imgur.com/${id}`;
           await editMessageText(chatId, statusMsg.message_id, imgurUrl, env, {
             inline_keyboard: [
-              [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
-              [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-              [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
+              [{ text: tr(lang, "copyLink"), copy_text: { text: imgurUrl } }],
+              [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+              [{ text: tr(lang, "deleteBtn"), callback_data: `delete:${deletehash}` }],
             ],
           });
           return;
@@ -360,9 +436,9 @@ async function handleMediaGroup(message, media, env, deferreds) {
           console.log(`mg:${groupId}: album created → ${album.id}`);
           await editMessageText(chatId, statusMsg.message_id, albumUrl, env, {
             inline_keyboard: [
-              [{ text: "Copy Link", copy_text: { text: albumUrl } }],
-              [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(albumUrl)}` }],
-              [{ text: "🗑️ Delete", callback_data: `delete:${album.deletehash}` }],
+              [{ text: tr(lang, "copyLink"), copy_text: { text: albumUrl } }],
+              [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(albumUrl)}` }],
+              [{ text: tr(lang, "deleteBtn"), callback_data: `delete:${album.deletehash}` }],
             ],
           });
         } catch (err) {
@@ -389,11 +465,15 @@ async function handleMediaGroup(message, media, env, deferreds) {
 
 async function handleCallbackQuery(query, env) {
   const { id: queryId, message, data } = query;
+  const userId = query.from?.id;
 
   if (!data) {
     await answerCallbackQuery(queryId, env);
     return;
   }
+
+  // Fetch user language once for all handlers below
+  const lang = await getUserLanguage(userId, env);
 
   // Step 1: first tap on delete — ask for confirmation
   if (data.startsWith("delete:")) {
@@ -405,14 +485,12 @@ async function handleCallbackQuery(query, env) {
       editMessageText(
         message.chat.id,
         message.message_id,
-        isAlbum
-          ? "Are you sure you want to delete this album?"
-          : "Are you sure you want to delete this image?",
+        isAlbum ? tr(lang, "confirmDeleteAlbum") : tr(lang, "confirmDeleteImage"),
         env,
         {
           inline_keyboard: [
-            [{ text: "✅ Yes, delete", callback_data: `confirm:${isAlbum ? "album" : "img"}:${deletehash}` }],
-            [{ text: "↩️ Cancel", callback_data: `cancel:${isAlbum ? "a" : "i"}:${imgurId}:${deletehash}` }],
+            [{ text: tr(lang, "yesDelete"), callback_data: `confirm:${isAlbum ? "album" : "img"}:${deletehash}` }],
+            [{ text: tr(lang, "cancel"), callback_data: `cancel:${isAlbum ? "a" : "i"}:${imgurId}:${deletehash}` }],
           ],
         }
       ),
@@ -448,7 +526,7 @@ async function handleCallbackQuery(query, env) {
       console.error("delete error:", err);
     }
     await Promise.all([
-      editMessageText(message.chat.id, message.message_id, "Deleted ✅", env),
+      editMessageText(message.chat.id, message.message_id, tr(lang, "deleted"), env),
       answerCallbackQuery(queryId, env),
     ]);
     return;
@@ -480,9 +558,9 @@ async function handleCallbackQuery(query, env) {
     await Promise.all([
       editMessageText(message.chat.id, message.message_id, imgurUrl, env, {
         inline_keyboard: [
-          [{ text: "Copy Link", copy_text: { text: imgurUrl } }],
-          [{ text: "Share", url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
-          [{ text: "🗑️ Delete", callback_data: `delete:${deletehash}` }],
+          [{ text: tr(lang, "copyLink"), copy_text: { text: imgurUrl } }],
+          [{ text: tr(lang, "share"), url: `https://t.me/share/url?url=${encodeURIComponent(imgurUrl)}` }],
+          [{ text: tr(lang, "deleteBtn"), callback_data: `delete:${deletehash}` }],
         ],
       }),
       answerCallbackQuery(queryId, env),
@@ -493,7 +571,6 @@ async function handleCallbackQuery(query, env) {
   // Set default upload service
   if (data.startsWith("set_service:")) {
     const service = data.slice("set_service:".length);
-    const userId = query.from?.id;
     if (userId && (service === "imgur" || service === "imgbb")) {
       await setUserService(userId, service, env);
       const serviceLabel = service === "imgbb" ? "ImgBB" : "Imgur";
@@ -501,18 +578,34 @@ async function handleCallbackQuery(query, env) {
         editMessageText(
           message.chat.id,
           message.message_id,
-          message.text,
+          buildSettingsText(lang, serviceLabel),
           env,
-          {
-            inline_keyboard: [
-              [
-                { text: `${service === "imgur" ? "✅ " : ""}Imgur`, callback_data: "set_service:imgur" },
-                { text: `${service === "imgbb" ? "✅ " : ""}ImgBB`, callback_data: "set_service:imgbb" },
-              ],
-            ],
-          }
+          buildSettingsKeyboard(lang, service)
         ),
-        answerCallbackQuery(queryId, env, `Default set to ${serviceLabel}`),
+        answerCallbackQuery(queryId, env, tr(lang, "defaultSetTo", serviceLabel)),
+      ]);
+    } else {
+      await answerCallbackQuery(queryId, env);
+    }
+    return;
+  }
+
+  // Set language
+  if (data.startsWith("set_lang:")) {
+    const newLang = data.slice("set_lang:".length);
+    if (userId && (newLang === "en" || newLang === "he")) {
+      await setUserLanguage(userId, newLang, env);
+      const currentService = await getUserService(userId, env);
+      const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
+      await Promise.all([
+        editMessageText(
+          message.chat.id,
+          message.message_id,
+          buildSettingsText(newLang, serviceLabel),
+          env,
+          buildSettingsKeyboard(newLang, currentService)
+        ),
+        answerCallbackQuery(queryId, env, tr(newLang, "languageSaved")),
       ]);
     } else {
       await answerCallbackQuery(queryId, env);
@@ -1079,11 +1172,13 @@ async function mirrorToCatbox(fileBytes, filename) {
 
 // ---------------------------------------------------------------------------
 // D1 user preferences
-// Schema (run once via `wrangler d1 execute media-upload-bot-users --command`):
-//   CREATE TABLE IF NOT EXISTS user_prefs (
-//     user_id INTEGER PRIMARY KEY,
-//     default_service TEXT NOT NULL DEFAULT 'imgur'
-//   );
+// Initial schema (run once):
+//   wrangler d1 execute media-upload-bot-users --command \
+//     "CREATE TABLE IF NOT EXISTS user_prefs (user_id INTEGER PRIMARY KEY, default_service TEXT NOT NULL DEFAULT 'imgur')"
+//
+// Migration — add language column (run once after initial schema):
+//   wrangler d1 execute media-upload-bot-users --command \
+//     "ALTER TABLE user_prefs ADD COLUMN language TEXT NOT NULL DEFAULT 'en'"
 // ---------------------------------------------------------------------------
 
 async function getUserService(userId, env) {
@@ -1104,4 +1199,28 @@ async function setUserService(userId, service, env) {
     "INSERT INTO user_prefs (user_id, default_service) VALUES (?, ?)" +
     " ON CONFLICT(user_id) DO UPDATE SET default_service = excluded.default_service"
   ).bind(userId, service).run();
+}
+
+async function getUserLanguage(userId, env) {
+  if (!env.USER_PREFS_DB || !userId) return "en";
+  try {
+    const row = await env.USER_PREFS_DB.prepare(
+      "SELECT language FROM user_prefs WHERE user_id = ?"
+    ).bind(userId).first();
+    return row?.language ?? "en";
+  } catch {
+    return "en";
+  }
+}
+
+async function setUserLanguage(userId, language, env) {
+  if (!env.USER_PREFS_DB || !userId) return;
+  try {
+    await env.USER_PREFS_DB.prepare(
+      "INSERT INTO user_prefs (user_id, language) VALUES (?, ?)" +
+      " ON CONFLICT(user_id) DO UPDATE SET language = excluded.language"
+    ).bind(userId, language).run();
+  } catch (err) {
+    console.error("setUserLanguage error:", err);
+  }
 }
