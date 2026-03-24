@@ -54,6 +54,8 @@ const STRINGS = {
     chooseLanguage:      `Please choose your language:`,
     langEn:              `🇺🇸 English`,
     langHe:              `🇮🇱 עברית`,
+    settingsBtn:         `⚙️ Settings`,
+    welcomeHint:         `Use /settings to configure your upload service and language.`,
   },
   he: {
     welcomeIntro:        (name) => `היי ${name}! 👋`,
@@ -84,6 +86,8 @@ const STRINGS = {
     chooseLanguage:      `אנא בחר את השפה שלך:`,
     langEn:              `🇺🇸 English`,
     langHe:              `🇮🇱 עברית`,
+    settingsBtn:         `⚙️ הגדרות`,
+    welcomeHint:         `השתמש ב-/settings כדי להגדיר את שירות ההעלאה והשפה שלך.`,
   },
 };
 
@@ -180,26 +184,14 @@ async function processUpdate(update, env, deferreds) {
     return;
   }
 
-  // Handle /start command
+  // Handle /start command — always show language picker first
   if (message.text && message.text.startsWith("/start")) {
-    const username = message.from?.username
-      ? `@${message.from.username}`
-      : message.from?.first_name || "there";
-    const currentService = await getUserService(userId, env);
-    const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
-    const text = [
-      tr(lang, "welcomeIntro", username),
-      "",
-      tr(lang, "welcomeBody"),
-      "",
-      tr(lang, "currentService", serviceLabel),
-      tr(lang, "changeBelow"),
-      "",
-      tr(lang, "supportedFormats"),
-      "",
-      tr(lang, "maxSize"),
-    ].join("\n");
-    await sendMessage(chatId, text, env, buildSettingsKeyboard(lang, currentService));
+    await sendMessage(chatId, "🌐 Please choose your language:\nאנא בחר את השפה שלך:", env, {
+      inline_keyboard: [[
+        { text: "🇺🇸 English", callback_data: "start_lang:en" },
+        { text: "🇮🇱 עברית", callback_data: "start_lang:he" },
+      ]],
+    });
     return;
   }
 
@@ -587,6 +579,52 @@ async function handleCallbackQuery(query, env) {
     } else {
       await answerCallbackQuery(queryId, env);
     }
+    return;
+  }
+
+  // First-run language selection (from /start onboarding)
+  if (data.startsWith("start_lang:")) {
+    const newLang = data.slice("start_lang:".length);
+    if (userId && (newLang === "en" || newLang === "he")) {
+      await setUserLanguage(userId, newLang, env);
+      const username = query.from?.username
+        ? `@${query.from.username}`
+        : query.from?.first_name || "there";
+      const text = [
+        tr(newLang, "welcomeIntro", username),
+        "",
+        tr(newLang, "welcomeBody"),
+        "",
+        tr(newLang, "welcomeHint"),
+      ].join("\n");
+      await Promise.all([
+        editMessageText(message.chat.id, message.message_id, text, env, {
+          inline_keyboard: [[
+            { text: tr(newLang, "settingsBtn"), callback_data: "open_settings" },
+          ]],
+        }),
+        answerCallbackQuery(queryId, env),
+      ]);
+    } else {
+      await answerCallbackQuery(queryId, env);
+    }
+    return;
+  }
+
+  // Open settings panel (from welcome message button)
+  if (data === "open_settings") {
+    const currentService = await getUserService(userId, env);
+    const serviceLabel = currentService === "imgbb" ? "ImgBB" : "Imgur";
+    await Promise.all([
+      editMessageText(
+        message.chat.id,
+        message.message_id,
+        buildSettingsText(lang, serviceLabel),
+        env,
+        buildSettingsKeyboard(lang, currentService)
+      ),
+      answerCallbackQuery(queryId, env),
+    ]);
     return;
   }
 
